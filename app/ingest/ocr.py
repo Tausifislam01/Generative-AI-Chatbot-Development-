@@ -1,21 +1,15 @@
 from __future__ import annotations
-
 import os
 from pathlib import Path
 from typing import List
-
+from io import BytesIO
 import pytesseract
 from PIL import Image
 from pdf2image import convert_from_path
 
 
 def _configure_binaries() -> None:
-    """
-    Optional overrides if binaries aren't on PATH.
-    Set:
-      TESSERACT_CMD = full path to tesseract.exe
-      POPPLER_PATH  = folder path to poppler 'bin' (contains pdftoppm.exe)
-    """
+    
     tcmd = os.getenv("TESSERACT_CMD")
     if tcmd:
         pytesseract.pytesseract.tesseract_cmd = tcmd
@@ -52,3 +46,12 @@ def ocr_pdf_file(
         texts.append(f"[PAGE {i}]\n{page_text}".strip())
 
     return "\n\n".join(texts).strip()
+
+
+def ocr_image_bytes(image_bytes: bytes, lang: str = "eng") -> str:
+    _configure_binaries()
+    img = Image.open(BytesIO(image_bytes))
+    if img.mode not in ("RGB", "L"):
+        img = img.convert("RGB")
+    return (pytesseract.image_to_string(img, lang=lang) or "").strip()
+

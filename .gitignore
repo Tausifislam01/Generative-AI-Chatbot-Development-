@@ -27,3 +27,20 @@ Thumbs.db
 
 # Local data / indexes (we'll use later)
 data/
+
+# Jupyter / misc
+.ipynb_checkpoints/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Streamlit (if you add the UI bonus)
+.streamlit/
+
+# Docker
+*.pid
+
+# Windows Python launcher / cache
+*.sqlite-journal

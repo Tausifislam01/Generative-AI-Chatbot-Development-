@@ -6,13 +6,13 @@ import uuid
 import json
 from typing import Any, Dict, List
 from app.rag.llm_groq import GroqLLM
-from app.ingest.loaders import load_txt, load_pdf
+from app.ingest.loaders import load_txt, load_pdf, load_docx, load_csv, load_sqlite
 from app.ingest.chunking import chunk_text
 from app.rag.embeddings import Embedder
 from app.rag.vectorstore import FaissVectorStore
-
-# Step 9 OCR
-from app.ingest.ocr import ocr_image_file, ocr_pdf_file  # uses your ocr.py :contentReference[oaicite:3]{index=3}
+import re
+from app.ingest.ocr import ocr_image_file, ocr_pdf_file, ocr_image_bytes
+import base64
 
 load_dotenv()
 
@@ -25,6 +25,36 @@ INDEX_DIR = Path("data/index")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
 INDEX_DIR.mkdir(parents=True, exist_ok=True)
+
+PAGE_MARKER_RE = re.compile(r"\[PAGE\s+(\d+)\]")
+
+
+def _build_page_starts(text: str) -> List[tuple[int, int]]:
+    starts: List[tuple[int, int]] = []
+    for m in PAGE_MARKER_RE.finditer(text or ""):
+        try:
+            page = int(m.group(1))
+            starts.append((m.start(), page))
+        except Exception:
+            continue
+    return starts
+
+
+def _page_for_chunk(
+    start_char: int,
+    page_starts: List[tuple[int, int]],
+    default: int | None = None,
+) -> int | None:
+    if not page_starts:
+        return default
+
+    current = default
+    for idx, page in page_starts:
+        if idx <= start_char:
+            current = page
+        else:
+            break
+    return current
 
 
 _embedder: Embedder | None = None
@@ -61,12 +91,13 @@ def health():
     return {"status": "ok"}
 
 
-# Step 9 OCR helpers
 SUPPORTED_IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
+SUPPORTED_DOCX_EXTS = {".docx"}
+SUPPORTED_CSV_EXTS = {".csv"}
+SUPPORTED_DB_EXTS = {".db", ".sqlite", ".sqlite3"}
 
 
 def _is_probably_scanned_pdf(extracted_text: str) -> bool:
-    # Heuristic: scanned PDFs often yield empty/near-empty extract_text()
     return len((extracted_text or "").strip()) < 50
 
 
@@ -87,48 +118,57 @@ async def ingest(file: UploadFile = File(...)):
 
     stored_path.write_bytes(content)
 
-    chunks_count = None
-
     text = None
+
     if suffix == ".txt":
         text = load_txt(stored_path)
 
     elif suffix == ".pdf":
         text = load_pdf(stored_path)
-        # Step 9: OCR fallback for scanned PDFs
         if _is_probably_scanned_pdf(text):
             text = ocr_pdf_file(stored_path, max_pages=5)
 
     elif suffix in SUPPORTED_IMAGE_EXTS:
-        # Step 9: OCR for images
         text = ocr_image_file(stored_path)
 
-    if text is not None:
-        chunks = chunk_text(text, chunk_size=1000, overlap=150)
+    elif suffix in SUPPORTED_DOCX_EXTS:
+        text = load_docx(stored_path)
 
-        chunks_payload = {
-            "doc_id": doc_id,
-            "original_filename": file.filename,
-            "stored_filename": stored_filename,
-            "chunking": {"chunk_size": 1000, "overlap": 150},
-            "chunks": [
-                {
-                    "chunk_id": c.chunk_id,
-                    "text": c.text,
-                    "start_char": c.start_char,
-                    "end_char": c.end_char,
-                }
-                for c in chunks
-            ],
-        }
+    elif suffix in SUPPORTED_CSV_EXTS:
+        text = load_csv(stored_path)
 
-        (CHUNKS_DIR / f"{doc_id}.json").write_text(
-            json.dumps(chunks_payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        chunks_count = len(chunks)
-    else:
-        chunks_count = None
+    elif suffix in SUPPORTED_DB_EXTS:
+        text = load_sqlite(stored_path)
+
+    if text is None or not str(text).strip():
+        raise HTTPException(status_code=400, detail=f"No text could be extracted from '{file.filename}'")
+
+    page_starts = _build_page_starts(text)
+    default_page = 1 if suffix in SUPPORTED_IMAGE_EXTS else None
+
+    chunks = chunk_text(text, chunk_size=1000, overlap=150)
+
+    chunks_payload = {
+        "doc_id": doc_id,
+        "original_filename": file.filename,
+        "stored_filename": stored_filename,
+        "chunking": {"chunk_size": 1000, "overlap": 150},
+        "chunks": [
+            {
+                "chunk_id": c.chunk_id,
+                "text": c.text,
+                "start_char": c.start_char,
+                "end_char": c.end_char,
+                "page": _page_for_chunk(c.start_char, page_starts, default=default_page),
+            }
+            for c in chunks
+        ],
+    }
+
+    (CHUNKS_DIR / f"{doc_id}.json").write_text(
+        json.dumps(chunks_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
     return {
         "doc_id": doc_id,
@@ -136,7 +176,7 @@ async def ingest(file: UploadFile = File(...)):
         "stored_filename": stored_filename,
         "size_bytes": len(content),
         "uploaded_at": datetime.utcnow().isoformat() + "Z",
-        "chunks_count": chunks_count,
+        "chunks_count": len(chunks),
     }
 
 
@@ -159,6 +199,7 @@ def _load_all_chunks() -> List[Dict[str, Any]]:
                     "text": c["text"],
                     "start_char": c.get("start_char"),
                     "end_char": c.get("end_char"),
+                    "page": c.get("page"),
                 }
             )
     return records
@@ -186,6 +227,7 @@ def build_index():
             "chunk_id": r["chunk_id"],
             "start_char": r["start_char"],
             "end_char": r["end_char"],
+            "page": r.get("page"),
             "text": r["text"],
             "snippet": (r["text"][:240] + "…") if len(r["text"]) > 240 else r["text"],
         }
@@ -208,11 +250,21 @@ def build_index():
 @app.post("/query")
 def query(payload: Dict[str, Any]):
     question = payload.get("question")
+    image_b64 = payload.get("image_base64")
     top_k = int(payload.get("top_k", 5))
     doc_id_filter = payload.get("doc_id")
 
     if not question or not isinstance(question, str):
         raise HTTPException(status_code=400, detail="Missing 'question' (string).")
+
+    if image_b64:
+        try:
+            img_bytes = base64.b64decode(image_b64)
+            ocr_text = ocr_image_bytes(img_bytes)
+            if ocr_text.strip():
+                question = f"{question}\n\n[IMAGE OCR]\n{ocr_text}".strip()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid image_base64: {e}")
 
     store = get_store()
     if store.index is None:
@@ -235,12 +287,13 @@ def query(payload: Dict[str, Any]):
                 "doc_id": m.get("doc_id"),
                 "original_filename": m.get("original_filename"),
                 "chunk_id": m.get("chunk_id"),
+                "page": m.get("page"),
                 "snippet": m.get("snippet"),
             }
         )
 
         context_blocks.append(
-            f"[SOURCE doc_id={m.get('doc_id')} chunk_id={m.get('chunk_id')}]\n{m.get('text')}\n"
+            f"[SOURCE doc_id={m.get('doc_id')} chunk_id={m.get('chunk_id')} page={m.get('page')}]\n{m.get('text')}\n"
         )
 
         if len(sources) >= top_k:
@@ -251,7 +304,7 @@ def query(payload: Dict[str, Any]):
     system_prompt = (
         "You are a helpful assistant. Answer the user's question using ONLY the provided sources. "
         "If the sources do not contain the answer, say you don't know. "
-        "When you use information, cite it by referring to SOURCE tags (doc_id, chunk_id)."
+        "When you use information, cite it by referring to SOURCE tags (doc_id, chunk_id, page)."
     )
 
     user_prompt = f"Sources:\n{context}\n\nQuestion:\n{question}\n\nAnswer with citations."
