@@ -11,6 +11,9 @@ from app.ingest.chunking import chunk_text
 from app.rag.embeddings import Embedder
 from app.rag.vectorstore import FaissVectorStore
 
+# Step 9 OCR
+from app.ingest.ocr import ocr_image_file, ocr_pdf_file  # uses your ocr.py :contentReference[oaicite:3]{index=3}
+
 load_dotenv()
 
 app = FastAPI(title="RAG Assignment API", version="0.4.0")
@@ -39,7 +42,7 @@ def get_store() -> FaissVectorStore:
     global _store
     if _store is None:
         _store = FaissVectorStore(INDEX_DIR)
-        _store.load()  
+        _store.load()
     return _store
 
 
@@ -58,9 +61,18 @@ def health():
     return {"status": "ok"}
 
 
+# Step 9 OCR helpers
+SUPPORTED_IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
+
+
+def _is_probably_scanned_pdf(extracted_text: str) -> bool:
+    # Heuristic: scanned PDFs often yield empty/near-empty extract_text()
+    return len((extracted_text or "").strip()) < 50
+
+
 @app.post("/ingest")
 async def ingest(file: UploadFile = File(...)):
-    
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is missing")
 
@@ -80,8 +92,16 @@ async def ingest(file: UploadFile = File(...)):
     text = None
     if suffix == ".txt":
         text = load_txt(stored_path)
+
     elif suffix == ".pdf":
         text = load_pdf(stored_path)
+        # Step 9: OCR fallback for scanned PDFs
+        if _is_probably_scanned_pdf(text):
+            text = ocr_pdf_file(stored_path, max_pages=5)
+
+    elif suffix in SUPPORTED_IMAGE_EXTS:
+        # Step 9: OCR for images
+        text = ocr_image_file(stored_path)
 
     if text is not None:
         chunks = chunk_text(text, chunk_size=1000, overlap=150)
@@ -109,7 +129,6 @@ async def ingest(file: UploadFile = File(...)):
         chunks_count = len(chunks)
     else:
         chunks_count = None
-
 
     return {
         "doc_id": doc_id,
@@ -147,16 +166,18 @@ def _load_all_chunks() -> List[Dict[str, Any]]:
 
 @app.post("/build_index")
 def build_index():
-    
+
     records = _load_all_chunks()
     if not records:
-        raise HTTPException(status_code=400, detail="No chunks found. Ingest at least one .txt file first.")
+        raise HTTPException(
+            status_code=400,
+            detail="No chunks found. Ingest at least one supported file first.",
+        )
 
     texts = [r["text"] for r in records]
     embedder = get_embedder()
     vectors = embedder.embed_texts(texts)
 
-    # Store metadata aligned with vectors
     meta = [
         {
             "doc_id": r["doc_id"],
@@ -171,11 +192,9 @@ def build_index():
         for r in records
     ]
 
-
     store = FaissVectorStore(INDEX_DIR)
     store.build(vectors, meta)
 
-    # refresh global store
     global _store
     _store = store
 
@@ -190,7 +209,7 @@ def build_index():
 def query(payload: Dict[str, Any]):
     question = payload.get("question")
     top_k = int(payload.get("top_k", 5))
-    doc_id_filter = payload.get("doc_id")  
+    doc_id_filter = payload.get("doc_id")
 
     if not question or not isinstance(question, str):
         raise HTTPException(status_code=400, detail="Missing 'question' (string).")
@@ -202,7 +221,6 @@ def query(payload: Dict[str, Any]):
     embedder = get_embedder()
     qvec = embedder.embed_query(question)
 
-    # over-fetch then filter
     results = store.search(qvec, top_k=top_k * 5)
 
     sources = []
@@ -242,4 +260,3 @@ def query(payload: Dict[str, Any]):
     answer = llm.answer(system_prompt=system_prompt, user_prompt=user_prompt)
 
     return {"answer": answer, "sources": sources}
-
