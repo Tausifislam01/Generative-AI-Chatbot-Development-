@@ -6,7 +6,7 @@ import uuid
 import json
 from typing import Any, Dict, List
 from app.rag.llm_groq import GroqLLM
-from app.ingest.loaders import load_txt
+from app.ingest.loaders import load_txt, load_pdf
 from app.ingest.chunking import chunk_text
 from app.rag.embeddings import Embedder
 from app.rag.vectorstore import FaissVectorStore
@@ -77,8 +77,13 @@ async def ingest(file: UploadFile = File(...)):
 
     chunks_count = None
 
+    text = None
     if suffix == ".txt":
         text = load_txt(stored_path)
+    elif suffix == ".pdf":
+        text = load_pdf(stored_path)
+
+    if text is not None:
         chunks = chunk_text(text, chunk_size=1000, overlap=150)
 
         chunks_payload = {
@@ -102,6 +107,9 @@ async def ingest(file: UploadFile = File(...)):
             encoding="utf-8",
         )
         chunks_count = len(chunks)
+    else:
+        chunks_count = None
+
 
     return {
         "doc_id": doc_id,
