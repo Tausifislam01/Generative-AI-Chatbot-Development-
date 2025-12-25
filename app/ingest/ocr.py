@@ -9,7 +9,6 @@ from pdf2image import convert_from_path
 
 
 def _configure_binaries() -> None:
-    
     tcmd = os.getenv("TESSERACT_CMD")
     if tcmd:
         pytesseract.pytesseract.tesseract_cmd = tcmd
@@ -30,15 +29,15 @@ def ocr_pdf_file(
     dpi: int = 250,
 ) -> str:
     _configure_binaries()
+
+
     poppler_path = os.getenv("POPPLER_PATH")
 
-    pages = convert_from_path(
-        str(file_path),
-        dpi=dpi,
-        first_page=1,
-        last_page=max_pages,
-        poppler_path=poppler_path,
-    )
+    kwargs = {}
+    if poppler_path:
+        kwargs["poppler_path"] = poppler_path
+
+    pages = convert_from_path(str(file_path), dpi=dpi, first_page=1, last_page=max_pages, **kwargs)
 
     texts: List[str] = []
     for i, page_img in enumerate(pages, start=1):
@@ -54,4 +53,3 @@ def ocr_image_bytes(image_bytes: bytes, lang: str = "eng") -> str:
     if img.mode not in ("RGB", "L"):
         img = img.convert("RGB")
     return (pytesseract.image_to_string(img, lang=lang) or "").strip()
-

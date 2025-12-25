@@ -34,6 +34,21 @@ AUTO_REBUILD_INDEX = os.getenv("AUTO_REBUILD_INDEX", "true").strip().lower() in 
 MIN_RETRIEVAL_SCORE = float(os.getenv("MIN_RETRIEVAL_SCORE", "0.25"))
 
 
+def _friendly_ocr_error(e: Exception) -> HTTPException:
+    msg = str(e)
+    if "PDFInfoNotInstalledError" in msg or "Is poppler installed" in msg or "pdfinfo" in msg:
+        return HTTPException(
+            status_code=400,
+            detail=(
+                "This PDF appears to be scanned (or text extraction was insufficient), so OCR was attempted. "
+                "OCR for PDFs requires Poppler (pdfinfo/pdftoppm). "
+                "Install Poppler and ensure it's on PATH, or set POPPLER_PATH to the Poppler 'bin' folder. "
+                "Example (Windows): setx POPPLER_PATH \"C:\\poppler\\Library\\bin\""
+            ),
+        )
+    return HTTPException(status_code=400, detail=f"OCR failed: {e}")
+
+
 def _build_page_starts(text: str) -> List[tuple[int, int]]:
     starts: List[tuple[int, int]] = []
     for m in PAGE_MARKER_RE.finditer(text or ""):
@@ -157,7 +172,12 @@ def _rebuild_index() -> Dict[str, Any]:
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "auto_rebuild_index": AUTO_REBUILD_INDEX,
+        "min_retrieval_score": MIN_RETRIEVAL_SCORE,
+    }
+
 
 
 @app.post("/ingest")
@@ -183,7 +203,10 @@ async def ingest(file: UploadFile = File(...)):
     elif suffix == ".pdf":
         text = load_pdf(stored_path)
         if _is_probably_scanned_pdf(text):
-            text = ocr_pdf_file(stored_path, max_pages=5)
+            try:
+                text = ocr_pdf_file(stored_path, max_pages=5)
+            except Exception as e:
+                raise _friendly_ocr_error(e)
     elif suffix in SUPPORTED_IMAGE_EXTS:
         text = ocr_image_file(stored_path)
     elif suffix in SUPPORTED_DOCX_EXTS:
@@ -249,8 +272,18 @@ def ingest_url(payload: Dict[str, Any] = Body(...)):
     if not url or not isinstance(url, str):
         raise HTTPException(status_code=400, detail="Missing or invalid 'url'")
 
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8",
+    }
+
     try:
-        resp = requests.get(url, timeout=30)
+        resp = requests.get(url, headers=headers, timeout=30, allow_redirects=True)
         resp.raise_for_status()
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to download URL: {e}")
@@ -273,7 +306,10 @@ def ingest_url(payload: Dict[str, Any] = Body(...)):
     elif suffix == ".pdf":
         text = load_pdf(stored_path)
         if _is_probably_scanned_pdf(text):
-            text = ocr_pdf_file(stored_path, max_pages=5)
+            try:
+                text = ocr_pdf_file(stored_path, max_pages=5)
+            except Exception as e:
+                raise _friendly_ocr_error(e)
     elif suffix in SUPPORTED_IMAGE_EXTS:
         text = ocr_image_file(stored_path)
     elif suffix in SUPPORTED_DOCX_EXTS:
@@ -365,21 +401,22 @@ def delete_document(doc_id: str):
 
     chunk_file.unlink()
 
-    out = {"deleted_doc_id": doc_id, "auto_rebuilt_index": False}
+    return {
+        "deleted_doc_id": doc_id,
+        "note": "Document deleted. Please rebuild index to reflect deletion.",
+        "auto_rebuilt_index": False,
+    }
 
-    if AUTO_REBUILD_INDEX:
-        try:
-            _rebuild_index()
-            out["auto_rebuilt_index"] = True
-        except Exception:
-            out["auto_rebuilt_index"] = False
-
-    return out
 
 
 @app.post("/build_index")
 def build_index():
     return _rebuild_index()
+
+
+def _source_name(m: Dict[str, Any]) -> str:
+
+    return (m.get("original_filename") or m.get("stored_filename") or m.get("doc_id") or "unknown").strip()
 
 
 @app.post("/query")
@@ -414,22 +451,22 @@ def query(payload: Dict[str, Any]):
     qvec = embedder.embed_query(query_for_search)
     results = store.search(qvec, top_k=top_k * 10)
 
-    sources = []
-    context_blocks = []
+    sources: List[Dict[str, Any]] = []
+    context_blocks: List[str] = []
 
+    # Include OCR (if provided) as a first-class "source"
     if ocr_text:
         sources.append(
             {
                 "score": 1.0,
-                "doc_id": "image_ocr",
-                "original_filename": "(image_base64)",
+                "source": "image_base64 (OCR)",
                 "chunk_id": "ocr",
                 "page": 1,
                 "snippet": (ocr_text[:240] + "…") if len(ocr_text) > 240 else ocr_text,
             }
         )
-        context_blocks.append(f"[SOURCE doc_id=image_ocr chunk_id=ocr page=1]\n{ocr_text}\n")
-        question_for_llm = f"{question_for_llm}\n\n[IMAGE OCR INCLUDED AS SOURCE: doc_id=image_ocr]"
+        context_blocks.append(f"[SOURCE file=image_base64 (OCR) chunk_id=ocr page=1]\n{ocr_text}\n")
+        question_for_llm = f"{question_for_llm}\n\n[IMAGE OCR INCLUDED AS SOURCE: file=image_base64 (OCR)]"
 
     retrieved_count = 0
     for score, m in results:
@@ -438,11 +475,12 @@ def query(payload: Dict[str, Any]):
         if doc_id_filter and m.get("doc_id") != doc_id_filter:
             continue
 
+        filename = _source_name(m)
+
         sources.append(
             {
-                "score": score,
-                "doc_id": m.get("doc_id"),
-                "original_filename": m.get("original_filename"),
+                "score": float(score),
+                "source": filename,
                 "chunk_id": m.get("chunk_id"),
                 "page": m.get("page"),
                 "snippet": m.get("snippet"),
@@ -450,7 +488,7 @@ def query(payload: Dict[str, Any]):
         )
 
         context_blocks.append(
-            f"[SOURCE doc_id={m.get('doc_id')} chunk_id={m.get('chunk_id')} page={m.get('page')}]\n{m.get('text')}\n"
+            f"[SOURCE file={filename} chunk_id={m.get('chunk_id')} page={m.get('page')}]\n{m.get('text')}\n"
         )
 
         retrieved_count += 1
@@ -468,7 +506,7 @@ def query(payload: Dict[str, Any]):
     system_prompt = (
         "You are a helpful assistant. Answer the user's question using ONLY the provided sources. "
         "If the sources do not contain the answer, say you don't know. "
-        "When you use information, cite it by referring to SOURCE tags (doc_id, chunk_id, page)."
+        "When you use information, cite it by referring to SOURCE tags (file, chunk_id, page)."
     )
 
     user_prompt = f"Sources:\n{context}\n\nQuestion:\n{question_for_llm}\n\nAnswer with citations."
