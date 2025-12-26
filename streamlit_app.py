@@ -3,6 +3,7 @@ import base64
 import requests
 import streamlit as st
 import pandas as pd
+from typing import List
 
 API_BASE_DEFAULT = os.getenv("API_BASE", "http://127.0.0.1:8000").rstrip("/")
 
@@ -17,6 +18,7 @@ with st.sidebar:
 
     auto_indexing = None
     min_score_default = None
+    default_use_langchain = None
 
     if st.button("Check API Health"):
         try:
@@ -26,18 +28,19 @@ with st.sidebar:
                 st.success(data)
                 auto_indexing = data.get("auto_rebuild_index")
                 min_score_default = data.get("min_retrieval_score")
+                default_use_langchain = data.get("default_use_langchain")
             else:
                 st.error(r.text)
         except Exception as e:
             st.error(str(e))
 
-    # Always try to fetch health silently (so UI can show Auto Indexing status)
     try:
         r = requests.get(f"{api_base}/health", timeout=3)
         if r.status_code == 200:
             data = r.json()
             auto_indexing = data.get("auto_rebuild_index")
             min_score_default = data.get("min_retrieval_score")
+            default_use_langchain = data.get("default_use_langchain")
     except Exception:
         pass
 
@@ -52,6 +55,14 @@ with st.sidebar:
     else:
         st.info("Auto indexing: unknown")
         st.caption("API not reachable or /health missing config fields.")
+
+    st.divider()
+    st.subheader("Answer Options")
+    use_langchain_ui = st.checkbox(
+        "Use LangChain (bonus)",
+        value=bool(default_use_langchain) if default_use_langchain is not None else False,
+    )
+    return_context_ui = st.checkbox("Return context in response", value=False)
 
 API_BASE = api_base
 
@@ -82,9 +93,6 @@ def fetch_documents() -> list[dict]:
 
 tabs = st.tabs(["Upload File", "Ingest URL", "Build Index", "Docs", "Query"])
 
-# -----------------------------
-# Upload File
-# -----------------------------
 with tabs[0]:
     st.subheader("Upload File")
     file = st.file_uploader("Choose a file", type=None)
@@ -101,7 +109,6 @@ with tabs[0]:
                     out = r.json()
                     st.success("Ingested successfully.")
                     st.json(out)
-
                     if auto_indexing is False:
                         st.warning("Auto indexing is OFF — go to Build Index tab to make it queryable.")
                     else:
@@ -111,9 +118,6 @@ with tabs[0]:
             except Exception as e:
                 st.error(str(e))
 
-# -----------------------------
-# Ingest URL
-# -----------------------------
 with tabs[1]:
     st.subheader("Ingest URL")
     url = st.text_input("Document URL")
@@ -129,7 +133,6 @@ with tabs[1]:
                     out = r.json()
                     st.success("Ingested successfully.")
                     st.json(out)
-
                     if auto_indexing is False:
                         st.warning("Auto indexing is OFF — go to Build Index tab to make it queryable.")
                     else:
@@ -137,14 +140,12 @@ with tabs[1]:
                 else:
                     st.error(r.text)
                     st.info(
-                        "If the site blocks downloads (403), try a different host or download locally and use Upload File."
+                        "If the site blocks downloads (403) or file type can't be inferred, "
+                        "download locally and use Upload File."
                     )
             except Exception as e:
                 st.error(str(e))
 
-# -----------------------------
-# Build Index (fallback)
-# -----------------------------
 with tabs[2]:
     st.subheader("Build / Rebuild Index")
 
@@ -168,9 +169,6 @@ with tabs[2]:
         except Exception as e:
             st.error(str(e))
 
-# -----------------------------
-# Docs
-# -----------------------------
 with tabs[3]:
     st.subheader("Ingested Documents")
 
@@ -213,7 +211,6 @@ with tabs[3]:
             for d in docs
             if d.get("doc_id")
         ]
-
         label_to_id = {f"{icon_for(name)} {name}": doc_id for (doc_id, name) in options}
         selected_label = st.selectbox("Select a document", ["(choose one)"] + list(label_to_id.keys()))
 
@@ -235,9 +232,6 @@ with tabs[3]:
                 except Exception as e:
                     st.error(str(e))
 
-# -----------------------------
-# Query
-# -----------------------------
 with tabs[4]:
     st.subheader("Query")
 
@@ -246,12 +240,15 @@ with tabs[4]:
     except Exception:
         docs = []
 
-    doc_filter_map: dict[str, str | None] = {"All documents": None}
+    doc_label_map: dict[str, str] = {}
+    doc_labels: List[str] = []
     for d in docs:
         doc_id = d.get("doc_id")
         fn = d.get("original_filename") or doc_id
         if doc_id:
-            doc_filter_map[f"{icon_for(fn)} {fn}"] = doc_id
+            label = f"{icon_for(fn)} {fn} ({doc_id[:8]})"
+            doc_label_map[label] = doc_id
+            doc_labels.append(label)
 
     question = st.text_area("Question", height=120)
 
@@ -259,10 +256,16 @@ with tabs[4]:
     with c1:
         top_k = st.number_input("top_k", min_value=1, max_value=8, value=5, step=1)
     with c2:
-        doc_choice = st.selectbox("Document filter", list(doc_filter_map.keys()))
-    with c3:
         default_min_score = float(min_score_default) if isinstance(min_score_default, (int, float)) else 0.25
         min_score = st.number_input("min_score", min_value=0.0, max_value=1.0, value=default_min_score, step=0.05)
+    with c3:
+        st.caption("Optional: filter retrieval to selected documents (multi-doc).")
+
+    selected_docs = st.multiselect(
+        "Document filter (optional)",
+        options=doc_labels,
+        default=[],
+    )
 
     image = st.file_uploader("Optional image (OCR)", type=["png", "jpg", "jpeg"])
 
@@ -270,10 +273,18 @@ with tabs[4]:
         if not question.strip():
             st.error("Please enter a question.")
         else:
-            payload = {"question": question.strip(), "top_k": int(top_k), "min_score": float(min_score)}
-            selected_doc_id = doc_filter_map.get(doc_choice)
-            if selected_doc_id:
-                payload["doc_id"] = selected_doc_id
+            payload = {
+                "question": question.strip(),
+                "top_k": int(top_k),
+                "min_score": float(min_score),
+                "use_langchain": bool(use_langchain_ui),
+                "return_context": bool(return_context_ui),
+            }
+
+            doc_ids = [doc_label_map[x] for x in selected_docs if x in doc_label_map]
+            if doc_ids:
+                payload["doc_ids"] = doc_ids
+
             if image is not None:
                 payload["image_base64"] = base64.b64encode(image.getvalue()).decode("utf-8")
 
@@ -287,26 +298,51 @@ with tabs[4]:
                     st.subheader("Answer")
                     st.write(out.get("answer", ""))
 
+                    per_doc = out.get("per_document_stats", []) or []
+                    if per_doc:
+                        st.subheader("Per-document stats")
+                        st.dataframe(pd.DataFrame(per_doc), width="stretch", hide_index=True)
+
+                    if return_context_ui and out.get("context"):
+                        st.subheader("Context")
+                        st.code(out.get("context", ""), language="text")
+
                     st.subheader("Sources")
                     sources = out.get("sources", []) or []
                     if not sources:
                         st.info("No sources returned.")
                     else:
-                        for i, s in enumerate(sources, start=1):
-                            src = s.get("source", "unknown")
-                            page = s.get("page", "?")
-                            score = float(s.get("score", 0.0) or 0.0)
-                            chunk_id = s.get("chunk_id", "?")
-                            snippet = s.get("snippet", "") or ""
+                        def group_key(s: dict) -> str:
+                            fn = s.get("original_filename") or s.get("source") or "unknown"
+                            did = s.get("doc_id")
+                            if did:
+                                return f"{icon_for(fn)} {fn} ({str(did)[:8]})"
+                            return "🖼️ image_base64 (OCR)"
 
-                            header = (
-                                f"**{i}. {icon_for(src)} {src}**  \n"
-                                f"Page: **{page}** · Chunk: **{chunk_id}** · Score: **{score:.3f}**"
-                            )
-                            with st.container(border=True):
-                                st.markdown(header)
-                                with st.expander("Snippet"):
-                                    st.write(snippet)
+                        grouped: dict[str, list[dict]] = {}
+                        for s in sources:
+                            k = group_key(s)
+                            grouped.setdefault(k, []).append(s)
+
+                        for gname, items in grouped.items():
+                            st.markdown(f"### {gname}")
+                            for i, s in enumerate(items, start=1):
+                                src = s.get("source", "unknown")
+                                page = s.get("page", "?")
+                                score = float(s.get("score", 0.0) or 0.0)
+                                chunk_id = s.get("chunk_id", "?")
+                                snippet = s.get("snippet", "") or ""
+                                icon = s.get("icon", icon_for(src))
+                                ftype = s.get("file_type", "unknown")
+
+                                header = (
+                                    f"**{i}. {icon} {src}**  \n"
+                                    f"Type: **{ftype}** · Page: **{page}** · Chunk: **{chunk_id}** · Score: **{score:.3f}**"
+                                )
+                                with st.container(border=True):
+                                    st.markdown(header)
+                                    with st.expander("Snippet"):
+                                        st.write(snippet)
                 else:
                     st.error(r.text)
                     if "Index not built" in r.text and auto_indexing is False:

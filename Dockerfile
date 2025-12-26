@@ -20,7 +20,7 @@ COPY requirements.txt /app/requirements.txt
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --upgrade pip setuptools wheel && \
-    python -m pip install -r /app/requirements.txt
+    python -m pip install --no-cache-dir -r /app/requirements.txt
 
 
 COPY . /app
