@@ -2,264 +2,380 @@
 
 A Retrieval-Augmented Generation (RAG) service that can ingest multiple document types (PDF/DOCX/TXT/CSV/SQLite/images), chunk + embed content, store vectors in FAISS, and answer questions via an LLM (Groq). Includes a minimal Streamlit UI for upload / URL ingest / indexing / querying.
 
+---
+
 ## Features
 
 - **Document ingestion**
   - Upload files via `POST /ingest` (multipart)
-  - Download + ingest via `POST /ingest_url` (JSON: `{ "url": "..." }`)
-  - Optional raw upload via `POST /upload` (returns `doc_id` + stored filename)
+  - Download + ingest via `POST /ingest_url`
+  - Optional raw upload via `POST /upload`
 - **Supported file types**
-  - `.pdf` (text extraction + OCR fallback for scanned PDFs)
-  - `.docx`, `.txt`
-  - `.csv`
-  - SQLite `.db`, `.sqlite`, `.sqlite3` (tables -> text)
-  - Images `.png`, `.jpg`, `.jpeg` (OCR)
-- **Chunking**
-  - Clean text split into overlapping chunks (chunk size ~1000, overlap ~150)
-- **Embeddings + Vector store**
+  - PDF (with OCR fallback)
+  - DOCX, TXT
+  - CSV
+  - SQLite databases
+  - Images (PNG/JPG OCR)
+- **Chunking + Embeddings**
+  - Overlapping chunks
   - SentenceTransformers embeddings
-  - FAISS index persisted to disk (`data/index`)
+  - FAISS vector store (persisted)
 - **Querying**
-  - `POST /query` supports:
-    - text question
-    - optional `image_base64` OCR
-    - optional multi-document filter (`doc_id` or `doc_ids`)
-    - optional `return_context`
-    - optional `use_langchain` (bonus)
-  - Returns answer + source metadata (filename, page, chunk id, snippet, type/icon)
-- **Dockerized**
-  - `docker-compose.yml` runs API + UI
-- **Streamlit UI**
-  - Upload/Ingest URL/Build Index/Docs/Query tabs
+  - `/query` endpoint with:
+    - question
+    - optional image OCR
+    - optional multi-document filtering
+    - optional context return
+- **Dockerized backend + Streamlit UI**
 
 ---
 
-## Project structure (typical)
+## Project Structure
 
 ```text
 .
 ├── app/
-│   ├── main.py
-│   ├── ingest/
-│   │   ├── loaders.py
-│   │   ├── chunking.py
-│   │   └── ocr.py
-│   └── rag/
-│       ├── embeddings.py
-│       ├── vectorstore.py
-│       └── llm_groq.py
 ├── streamlit_app.py
 ├── requirements.txt
 ├── docker-compose.yml
+├── Dockerfile
 ├── .env.example
-└── data/                  # created at runtime (uploads/chunks/index)
+├── samples/
+└── data/
 ```
 
+---
+
+## Sample Files
+
+The repository includes a `samples/` directory with demo documents for grading and testing:
+
+- `samples/sample_invoice.pdf`
+- `samples/sample_policy.docx`
+- `samples/sample_employees.csv`
+- `samples/sample_shop.sqlite`
+
+These files ensure answers can clearly reference **filename + page / table / row**, as required.
 
 ---
 
-## Requirements
+## Sample Queries (Demo / Grading)
 
-- Python 3.10+ (3.11 recommended)
-- System deps for OCR:
-  - **Tesseract OCR**
-  - **Poppler** (needed for OCR’ing scanned PDFs via `pdf2image`)
+### PDF — `sample_invoice.pdf`
+- What are the payment terms for this invoice?
+- What is the invoice due date?
+- What is the total amount due?
+- What late fee applies to overdue balances?
+- What are the remittance instructions?
+- On which page are the remittance instructions listed?
 
-On Windows, you may need to set:
-- `TESSERACT_CMD` to the `tesseract.exe` path
-- `POPPLER_PATH` to Poppler’s `bin` folder
+### DOCX — `sample_policy.docx`
+- What is the purpose of the IT Access Policy?
+- When does this policy become effective?
+- What is the minimum password length requirement?
+- Is multi-factor authentication required?
+- Who should employees contact for access requests?
+
+### CSV — `sample_employees.csv`
+- Which employees are located in Dhaka?
+- Who joined the company most recently?
+- How many employees work in each department?
+
+### SQLite — `sample_shop.sqlite`
+- Which orders are currently pending?
+- What are the payment terms for pending orders?
+- What is the total order amount for “Example Buyer Ltd.”?
+- Which customers have more than one order?
+
+### Cross-document (RAG capability)
+- Is “Net 30” mentioned in both the invoice and the database?
+- Which document mentions late fees and which mentions payment terms?
 
 ---
 
-## Environment setup
-
-Create a `.env` file from the example:
+## Environment Setup
 
 ```bash
 cp .env.example .env
 ```
 
 ### Required
-- `GROQ_API_KEY` – Groq API key for LLM calls.
+- `GROQ_API_KEY`
 
 ### Optional
-- `AUTO_REBUILD_INDEX` – automatically rebuild FAISS index after ingestion/delete (`true`/`false`)
-- `MIN_RETRIEVAL_SCORE` – retrieval threshold (default `0.25`)
-- `DEFAULT_USE_LANGCHAIN` – default for query-time `use_langchain` flag
-- `OCR_PDF_MAX_PAGES` – max pages to OCR for scanned PDFs (default `10`)
-- `TESSERACT_CMD` – explicit path to `tesseract` binary (Windows)
-- `POPPLER_PATH` – explicit path to Poppler `bin` folder (Windows)
+- `AUTO_REBUILD_INDEX`
+- `MIN_RETRIEVAL_SCORE`
+- `DEFAULT_USE_LANGCHAIN`
+- `OCR_PDF_MAX_PAGES`
+- `TESSERACT_CMD`
+- `POPPLER_PATH`
 
 ---
 
-## Run with Docker (recommended)
-
-1) Set env:
+## Run with Docker (Recommended)
 
 ```bash
-export GROQ_API_KEY="your_key_here"
-```
-
-2) Start:
-
-```bash
+export GROQ_API_KEY="your_key"
 docker compose up --build
 ```
 
-- API: `http://localhost:8000`
-- UI:  `http://localhost:8501`
+- API: http://localhost:8000
+- UI:  http://localhost:8501
 
 ---
 
-## Run locally (without Docker)
+## API Contract (Assignment Requirement)
 
-1) Create venv + install deps:
-
-```bash
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-source .venv/bin/activate
-
-pip install -r requirements.txt
-```
-
-2) Configure env:
-
-```bash
-cp .env.example .env
-# edit .env and set GROQ_API_KEY
-```
-
-3) Start API:
-
-```bash
-uvicorn app.main:app --reload --port 8000
-```
-
-4) Start UI (optional):
-
-```bash
-streamlit run streamlit_app.py --server.port 8501
-```
+The `/query` API returns:
+- `answer` – final answer
+- `sources` – filename, page, chunk id, snippet
+- `context` – always present (empty unless requested)
 
 ---
 
-## API Endpoints
+## Notes for Graders
 
-### Health
-`GET /health`
+- Vector store: FAISS
+- Embeddings: SentenceTransformers
+- LLM: Groq
+- OCR: Tesseract + Poppler
+- Bonus: Streamlit UI, Docker, LangChain option, multi-document filtering
 
-Returns config + supported types.
+---
 
-### Upload (bonus)
-`POST /upload` (multipart `file`)
+## Assignment Mapping (Requirement → Implementation)
 
-Stores file and returns `doc_id` + filenames.
+This section maps each assignment requirement directly to the implemented feature or endpoint.
 
-### Ingest file (recommended for normal flow)
-`POST /ingest` (multipart `file`)
+### 1. Document Upload & Ingestion
+**Requirement:** Upload documents for processing  
+**Implementation:**
+- `POST /ingest` – upload and ingest files
+- `POST /ingest_url` – download and ingest from URL
+- `POST /upload` – bonus raw upload returning `doc_id`
 
-- Saves file under `data/uploads/`
-- Extracts text (and OCR for images / scanned PDFs)
-- Chunks text and saves chunks under `data/chunks/{doc_id}.json`
-- If `AUTO_REBUILD_INDEX=true`, rebuilds the FAISS index automatically.
+### 2. Supported File Types
+**Requirement:** Handle multiple document formats  
+**Implementation:**
+- PDF (text + OCR fallback)
+- DOCX, TXT
+- CSV
+- SQLite databases (`.db`, `.sqlite`)
+- Images (`.png`, `.jpg`, `.jpeg`) with OCR
 
-Example:
+### 3. Text Chunking
+**Requirement:** Split documents into manageable chunks  
+**Implementation:**
+- Overlapping chunking (≈1000 tokens, overlap ≈150)
+- Stored per-document under `data/chunks/{doc_id}.json`
 
+### 4. Embeddings & Vector Store
+**Requirement:** Convert text to embeddings and store for retrieval  
+**Implementation:**
+- SentenceTransformers (`all-MiniLM-L6-v2`)
+- FAISS vector store persisted on disk (`data/index`)
+
+### 5. Retrieval-Augmented Generation (RAG)
+**Requirement:** Retrieve relevant chunks and generate answers  
+**Implementation:**
+- Similarity search via FAISS
+- Context construction with source tags
+- LLM response using Groq (LangChain optional)
+
+### 6. Question Answering API
+**Requirement:** API accepts a question and returns an answer  
+**Implementation:**
+- `POST /query`
+- Supports optional image OCR (`image_base64`)
+- Supports multi-document filtering
+- Returns:
+  - `answer`
+  - `sources` (filename, page, chunk id, snippet)
+  - `context` (always present; empty unless requested)
+
+### 7. Image-based Questions (OCR)
+**Requirement:** Answer questions from images  
+**Implementation:**
+- Tesseract OCR for images and scanned PDFs
+- OCR text included as a retrievable source
+
+### 8. API Response Transparency
+**Requirement:** Include source information with answers  
+**Implementation:**
+- Source metadata includes filename, page number, chunk id, score, and snippet
+
+### 9. Submission Artifacts
+**Requirement:** GitHub repo / ZIP with code, README, env example  
+**Implementation:**
+- Full source code included
+- `README.md` with setup, usage, and demos
+- `.env.example` provided
+- Sample files included in `samples/` directory
+
+### 10. Bonus Features
+**Implementation:**
+- Streamlit UI
+- Docker + docker-compose
+- LangChain optional path
+- Multi-document filtering
+- Persistent vector index
+- Source icons and metadata
+
+---
+
+## User Manual
+
+This section is a practical guide for **running and using** the system (API + UI) end-to-end.
+
+### Quick Start (Recommended Flow)
+
+1) Start the system (Docker recommended):
 ```bash
-curl -F "file=@sample.pdf" http://127.0.0.1:8000/ingest
+export GROQ_API_KEY="your_key_here"
+docker compose up --build
 ```
 
-### Ingest URL
-`POST /ingest_url` (JSON)
+2) Open the UI:
+- Streamlit UI: `http://localhost:8501`
 
+3) In the UI:
+- Upload a sample file (or ingest a URL)
+- If Auto Indexing is OFF, click **Build Index**
+- Ask a question in the **Query** tab and review **Sources** (and Context if enabled)
+
+---
+
+## API User Manual
+
+### Base URLs
+- API (default): `http://localhost:8000`
+- UI (default):  `http://localhost:8501`
+
+### 1) Check health
+```bash
+curl http://127.0.0.1:8000/health
+```
+Use this to confirm the service is running and to see config like `auto_rebuild_index` and `min_retrieval_score`.
+
+### 2) Ingest a file (PDF/DOCX/TXT/CSV/SQLite/Image)
+```bash
+curl -F "file=@samples/sample_invoice.pdf" http://127.0.0.1:8000/ingest
+```
+
+If `AUTO_REBUILD_INDEX=true`, the document becomes queryable immediately.
+If `AUTO_REBUILD_INDEX=false`, build the index next.
+
+### 3) Ingest from URL
 ```bash
 curl -X POST http://127.0.0.1:8000/ingest_url \
   -H "Content-Type: application/json" \
   -d '{"url":"https://example.com/some.pdf"}'
 ```
 
-### Build / rebuild index
-`POST /build_index`
-
-If auto indexing is off, call this after ingestion:
-
+### 4) Build / rebuild the FAISS index
+Only required when auto-indexing is OFF (or if you want to force a rebuild):
 ```bash
 curl -X POST http://127.0.0.1:8000/build_index
 ```
 
-### List documents
-`GET /documents`
-
-Returns ingested docs (doc_id, filename, chunk count, etc.)
-
-### Delete a document
-`DELETE /documents/{doc_id}`
-
-Deletes stored file + chunk JSON; if auto indexing is enabled it attempts to rebuild index.
-
-### Query
-`POST /query`
-
-Payload:
-
-```json
-{
-  "question": "What does the document say about payment terms?",
-  "image_base64": "optional_base64_encoded_image",
-  "top_k": 5,
-  "min_score": 0.25,
-  "use_langchain": false,
-  "return_context": false,
-  "doc_id": "optional_single_doc_id",
-  "doc_ids": ["optional", "multiple", "doc_ids"]
-}
+### 5) List ingested documents
+```bash
+curl http://127.0.0.1:8000/documents
 ```
 
-Example:
-
+### 6) Ask a question (RAG)
+Minimal:
 ```bash
 curl -X POST http://127.0.0.1:8000/query \
   -H "Content-Type: application/json" \
-  -d '{"question":"Summarize the key points", "top_k":5, "min_score":0.25}'
+  -d '{"question":"What are the payment terms?", "top_k":5, "min_score":0.25}'
 ```
 
-Response includes:
-- `answer` (string)
-- `sources` (list with filename/doc_id/page/chunk/score/snippet/type/icon)
-- `per_document_stats` (counts by doc)
-- optional `context` if `return_context=true`
+With context returned:
+```bash
+curl -X POST http://127.0.0.1:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What are the payment terms?", "top_k":5, "min_score":0.25, "return_context":true}'
+```
+
+With multi-document filtering:
+```bash
+curl -X POST http://127.0.0.1:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Summarize the key points", "doc_ids":["<doc_id_1>","<doc_id_2>"], "top_k":5}'
+```
+
+With image OCR:
+```bash
+# (Example) Create base64 from an image:
+#   Linux/macOS: base64 -i image.png | tr -d '\n'
+#   Windows PowerShell: [Convert]::ToBase64String([IO.File]::ReadAllBytes("image.png"))
+
+curl -X POST http://127.0.0.1:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What does the image say about payment terms?","image_base64":"<BASE64_STRING>","top_k":5,"return_context":true}'
+```
+
+### 7) Understand the `/query` response
+The response is designed to satisfy the assignment requirement:
+- `answer`: final answer text
+- `sources`: list of source objects with `source/original_filename`, `page`, `chunk_id`, `score`, and `snippet`
+- `context`: retrieval context (always present; empty unless `return_context=true`)
+
+### 8) Delete a document
+```bash
+curl -X DELETE http://127.0.0.1:8000/documents/<doc_id>
+```
+If auto-indexing is OFF, rebuild the index afterwards.
 
 ---
 
-## Data persistence
+## UI User Manual (Streamlit)
 
-Runtime data is stored under:
+Open the UI at `http://localhost:8501`.
 
-- `data/uploads/`  – stored uploaded files
-- `data/chunks/`   – extracted chunks + metadata per document (`{doc_id}.json`)
-- `data/index/`    – FAISS index + metadata (`faiss.index`, `meta.json`)
+### Sidebar
+- **API Base URL**: change if your API runs elsewhere (default `http://127.0.0.1:8000`)
+- **Check API Health**: verifies connectivity and shows current config
+- **Use LangChain**: toggles the optional LangChain path (bonus)
+- **Return context**: includes retrieved context in API response (useful for grading)
 
-Docker mounts `./data:/app/data` so data persists across container restarts.
+### Tabs
+
+#### 1) Upload File
+- Choose a file (PDF/DOCX/TXT/CSV/SQLite/Image)
+- Click **Ingest File**
+- If Auto Indexing is OFF, go to **Build Index** tab next
+
+#### 2) Ingest URL
+- Paste a direct link to a file (PDF/DOCX/etc.)
+- Click **Ingest URL**
+- If Auto Indexing is OFF, build the index next
+
+#### 3) Build Index
+- Click **Build Index** to create/rebuild the FAISS index
+- Required if Auto Indexing is OFF
+
+#### 4) Docs
+- View ingested documents and their `doc_id`
+- Delete documents if needed
+
+#### 5) Query
+- Enter a question
+- Optionally select document filters (multi-doc)
+- Optionally upload an image for OCR
+- Click **Ask**
+- Review:
+  - **Answer**
+  - **Per-document stats**
+  - **Sources** (with page + snippet)
+  - **Context** (if enabled)
 
 ---
 
-## Troubleshooting
+## User-Facing Troubleshooting (Common)
 
-### “FAISS index not loaded. Call /build_index first.”
-If `AUTO_REBUILD_INDEX=false`, ingesting docs won’t rebuild the index automatically. Call `POST /build_index`.
-
-### Scanned PDF OCR errors (Poppler)
-If you see errors mentioning Poppler/pdfinfo/pdftoppm, install Poppler and ensure it’s on PATH, or set `POPPLER_PATH`.
-
-### Tesseract not found
-Install Tesseract and (Windows) set `TESSERACT_CMD` to the full path of `tesseract.exe`.
-
----
-
-## Notes (for graders)
-
-- Embeddings: SentenceTransformers (all-MiniLM-L6-v2)
-- Vector store: FAISS (persisted on disk)
-- LLM: Groq (default model: llama-3.3-70b-versatile)
-- Bonus: Streamlit UI + Docker + LangChain option + multi-doc filtering + icons/metadata in sources
+- **API not reachable from UI**: confirm API is running and the API Base URL is correct.
+- **“FAISS index not loaded. Call /build_index first.”**: build index or enable `AUTO_REBUILD_INDEX=true`.
+- **Scanned PDF OCR errors**: install Poppler and set `POPPLER_PATH` (Windows) or ensure Poppler is on PATH.
+- **Tesseract not found**: install Tesseract and set `TESSERACT_CMD` (Windows) if needed.
