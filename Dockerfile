@@ -18,8 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt /app/requirements.txt
 
 
-RUN --mount=type=cache,target=/root/.cache/pip \
-    python -m pip install --upgrade pip setuptools wheel && \
+RUN python -m pip install --upgrade pip setuptools wheel && \
     python -m pip install --no-cache-dir -r /app/requirements.txt
 
 
