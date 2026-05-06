@@ -1,16 +1,17 @@
-from pydantic import BaseModel, EmailStr, Field
-from app.models import UserRole
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+from app.models.roles import UserRole
 
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length = 8, max_length = 32)
-    role: UserRole = UserRole.user
+    password: str = Field(min_length=8, max_length=32)
+    role: UserRole = UserRole.USER
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length = 8, max_length = 32)
+    password: str = Field(min_length=8, max_length=32)
 
 
 class TokenResponse(BaseModel):
@@ -19,6 +20,8 @@ class TokenResponse(BaseModel):
 
 
 class CurrentUserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     email: EmailStr
     role: UserRole

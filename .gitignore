@@ -32,6 +32,7 @@ data/
 
 # Jupyter / misc
 .ipynb_checkpoints/
+LOCAL_WORK_NOTES.md
 
 # Test / coverage
 .pytest_cache/

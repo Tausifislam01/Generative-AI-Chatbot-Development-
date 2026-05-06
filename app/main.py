@@ -16,10 +16,20 @@ import base64
 import requests
 import os
 from fastapi.responses import RedirectResponse
+from app.core.config import settings
+from app.db.session import init_db
+from app.routers.auth import router as auth_router
 
 load_dotenv()
 
 app = FastAPI(title="RAG Assignment API", version="0.9.0")
+app.include_router(auth_router)
+
+
+@app.on_event("startup")
+async def startup():
+    if settings.auto_create_tables:
+        await init_db()
 
 UPLOAD_DIR = Path("data/uploads")
 CHUNKS_DIR = Path("data/chunks")
