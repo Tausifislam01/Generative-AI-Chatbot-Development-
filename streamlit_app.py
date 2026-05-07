@@ -10,6 +10,18 @@ API_BASE_DEFAULT = os.getenv("API_BASE", "http://127.0.0.1:8000").rstrip("/")
 st.set_page_config(page_title="RAG Assignment UI", layout="wide")
 st.title("RAG Assignment UI")
 
+if "token" not in st.session_state:
+    st.session_state.token = ""
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+
+def auth_headers() -> dict:
+    if not st.session_state.token:
+        return {}
+    return {"Authorization": f"Bearer {st.session_state.token}"}
+
+
 with st.sidebar:
     st.subheader("Settings")
     api_base = st.text_input("API Base URL", value=API_BASE_DEFAULT).rstrip("/")
@@ -64,6 +76,53 @@ with st.sidebar:
     )
     return_context_ui = st.checkbox("Return context in response", value=False)
 
+    st.divider()
+    st.subheader("Account")
+    if st.session_state.user:
+        st.success(st.session_state.user.get("email", "Logged in"))
+        st.caption(f"Role: {st.session_state.user.get('role', 'user')}")
+        if st.button("Logout"):
+            st.session_state.token = ""
+            st.session_state.user = None
+            st.rerun()
+    else:
+        auth_mode = st.radio("Mode", ["Login", "Register"], horizontal=True)
+        auth_email = st.text_input("Email")
+        auth_password = st.text_input("Password", type="password")
+        auth_button = "Login" if auth_mode == "Login" else "Register"
+
+        if st.button(auth_button):
+            if not auth_email.strip() or not auth_password:
+                st.error("Email and password are required.")
+            else:
+                try:
+                    if auth_mode == "Register":
+                        r = requests.post(
+                            f"{api_base}/auth/register",
+                            json={"email": auth_email.strip(), "password": auth_password},
+                            timeout=30,
+                        )
+                        if r.status_code not in (200, 201):
+                            st.error(r.text)
+                        else:
+                            st.success("Account created. Please login.")
+                    else:
+                        r = requests.post(
+                            f"{api_base}/auth/login",
+                            json={"email": auth_email.strip(), "password": auth_password},
+                            timeout=30,
+                        )
+                        if r.status_code == 200:
+                            st.session_state.token = r.json().get("access_token", "")
+                            me = requests.get(f"{api_base}/auth/me", headers=auth_headers(), timeout=30)
+                            if me.status_code == 200:
+                                st.session_state.user = me.json()
+                            st.rerun()
+                        else:
+                            st.error(r.text)
+                except Exception as e:
+                    st.error(str(e))
+
 API_BASE = api_base
 
 
@@ -84,7 +143,7 @@ def icon_for(name: str) -> str:
 
 
 def fetch_documents() -> list[dict]:
-    r = requests.get(f"{API_BASE}/documents", timeout=30)
+    r = requests.get(f"{API_BASE}/documents", headers=auth_headers(), timeout=30)
     r.raise_for_status()
     docs = r.json() or []
     docs.sort(key=lambda d: (d.get("original_filename") or "").lower())
@@ -104,7 +163,7 @@ with tabs[0]:
             try:
                 with st.spinner("Uploading & ingesting..."):
                     files = {"file": (file.name, file.getvalue())}
-                    r = requests.post(f"{API_BASE}/ingest", files=files, timeout=300)
+                    r = requests.post(f"{API_BASE}/ingest", files=files, headers=auth_headers(), timeout=300)
                 if r.status_code == 200:
                     out = r.json()
                     st.success("Ingested successfully.")
@@ -128,7 +187,7 @@ with tabs[1]:
         else:
             try:
                 with st.spinner("Downloading & ingesting..."):
-                    r = requests.post(f"{API_BASE}/ingest_url", json={"url": url.strip()}, timeout=300)
+                    r = requests.post(f"{API_BASE}/ingest_url", json={"url": url.strip()}, headers=auth_headers(), timeout=300)
                 if r.status_code == 200:
                     out = r.json()
                     st.success("Ingested successfully.")
@@ -160,7 +219,7 @@ with tabs[2]:
     if st.button("Build Index", key="btn_build_index"):
         try:
             with st.spinner("Building FAISS index..."):
-                r = requests.post(f"{API_BASE}/build_index", timeout=600)
+                r = requests.post(f"{API_BASE}/build_index", headers=auth_headers(), timeout=600)
             if r.status_code == 200:
                 st.success("Index built successfully.")
                 st.json(r.json())
@@ -221,7 +280,7 @@ with tabs[3]:
                 doc_id_to_delete = label_to_id[selected_label]
                 try:
                     with st.spinner("Deleting..."):
-                        r = requests.delete(f"{API_BASE}/documents/{doc_id_to_delete}", timeout=120)
+                        r = requests.delete(f"{API_BASE}/documents/{doc_id_to_delete}", headers=auth_headers(), timeout=120)
                     if r.status_code == 200:
                         st.success("Deleted successfully.")
                         st.json(r.json())
@@ -290,7 +349,7 @@ with tabs[4]:
 
             try:
                 with st.spinner("Searching + generating answer..."):
-                    r = requests.post(f"{API_BASE}/query", json=payload, timeout=300)
+                    r = requests.post(f"{API_BASE}/query", json=payload, headers=auth_headers(), timeout=300)
 
                 if r.status_code == 200:
                     out = r.json()

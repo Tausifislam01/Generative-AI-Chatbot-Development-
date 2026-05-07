@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, get_current_user, hash_password, verify_password
 from app.db.session import get_db
+from app.models.roles import UserRole
 from app.models.user import User
 from app.schemas.auth import CurrentUserResponse, LoginRequest, RegisterRequest, TokenResponse
 
@@ -37,7 +38,9 @@ async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db))
     if existing_user:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email is already registered")
 
-    user = User(email=email, hashed_password=hash_password(payload.password), role=payload.role)
+    user_count = await db.scalar(select(func.count()).select_from(User))
+    role = UserRole.ADMIN if user_count == 0 else UserRole.USER
+    user = User(email=email, hashed_password=hash_password(payload.password), role=role)
     db.add(user)
 
     try:

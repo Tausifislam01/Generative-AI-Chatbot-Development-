@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body
+from fastapi import Depends, FastAPI, UploadFile, File, HTTPException, Body
 from pathlib import Path
 from datetime import datetime
 import uuid
@@ -18,7 +18,9 @@ import os
 from fastapi.responses import RedirectResponse
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
+from app.core.security import get_current_user, require_roles
 from app.db.session import init_db
+from app.models.roles import UserRole
 from app.routers.auth import router as auth_router
 
 load_dotenv()
@@ -355,7 +357,10 @@ def root():
     return RedirectResponse(url="/docs")
 
 @app.post("/ingest")
-async def ingest(file: UploadFile = File(...)):
+async def ingest(
+    file: UploadFile = File(...),
+    current_user=Depends(require_roles(UserRole.ADMIN, UserRole.EDITOR)),
+):
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is missing")
 
@@ -423,13 +428,19 @@ async def ingest(file: UploadFile = File(...)):
 
 
 @app.post("/upload")
-async def upload(file: UploadFile = File(...)):
+async def upload(
+    file: UploadFile = File(...),
+    current_user=Depends(require_roles(UserRole.ADMIN, UserRole.EDITOR)),
+):
     resp = await ingest(file)
     return {"file_id": resp["doc_id"], "details": resp}
 
 
 @app.post("/ingest_url")
-def ingest_url(payload: Dict[str, Any] = Body(...)):
+def ingest_url(
+    payload: Dict[str, Any] = Body(...),
+    current_user=Depends(require_roles(UserRole.ADMIN, UserRole.EDITOR)),
+):
     url = payload.get("url")
     if not url or not isinstance(url, str):
         raise HTTPException(status_code=400, detail="Missing or invalid 'url'")
@@ -530,7 +541,7 @@ def ingest_url(payload: Dict[str, Any] = Body(...)):
 
 
 @app.get("/documents")
-def list_documents():
+def list_documents(current_user=Depends(get_current_user)):
     docs = []
     for p in CHUNKS_DIR.glob("*.json"):
         payload = json.loads(p.read_text(encoding="utf-8"))
@@ -546,7 +557,10 @@ def list_documents():
 
 
 @app.delete("/documents/{doc_id}")
-def delete_document(doc_id: str):
+def delete_document(
+    doc_id: str,
+    current_user=Depends(require_roles(UserRole.ADMIN, UserRole.EDITOR)),
+):
     chunk_file = CHUNKS_DIR / f"{doc_id}.json"
     if not chunk_file.exists():
         raise HTTPException(status_code=404, detail="Document not found")
@@ -587,7 +601,7 @@ def delete_document(doc_id: str):
 
 
 @app.post("/build_index")
-def build_index():
+def build_index(current_user=Depends(require_roles(UserRole.ADMIN, UserRole.EDITOR))):
     return _rebuild_index()
 
 
@@ -610,7 +624,7 @@ def _normalize_doc_filter(payload: Dict[str, Any]) -> Optional[set[str]]:
 
 
 @app.post("/query")
-def query(payload: Dict[str, Any]):
+def query(payload: Dict[str, Any], current_user=Depends(get_current_user)):
     question = payload.get("question")
     image_b64 = payload.get("image_base64")
     top_k = int(payload.get("top_k", 5))
