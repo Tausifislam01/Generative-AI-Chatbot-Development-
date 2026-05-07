@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     app_name: str = Field(default="Chatbot API", validation_alias="APP_NAME")
     app_env: str = Field(default="development", validation_alias="APP_ENV")
     debug: bool = Field(default=False, validation_alias="APP_DEBUG")
+    log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
 
     database_url: str = Field(
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/rag_chatbot",

@@ -17,10 +17,13 @@ import requests
 import os
 from fastapi.responses import RedirectResponse
 from app.core.config import settings
+from app.core.logging import configure_logging, get_logger
 from app.db.session import init_db
 from app.routers.auth import router as auth_router
 
 load_dotenv()
+configure_logging()
+logger = get_logger(__name__)
 
 app = FastAPI(title="RAG Assignment API", version="0.9.0")
 app.include_router(auth_router)
@@ -28,8 +31,36 @@ app.include_router(auth_router)
 
 @app.on_event("startup")
 async def startup():
+    logger.info("application startup")
     if settings.auto_create_tables:
         await init_db()
+        logger.info("database tables checked")
+
+
+@app.middleware("http")
+async def log_requests(request, call_next):
+    started_at = datetime.utcnow()
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed_ms = (datetime.utcnow() - started_at).total_seconds() * 1000
+        logger.exception(
+            "request failed method=%s path=%s elapsed_ms=%.2f",
+            request.method,
+            request.url.path,
+            elapsed_ms,
+        )
+        raise
+
+    elapsed_ms = (datetime.utcnow() - started_at).total_seconds() * 1000
+    logger.info(
+        "request completed method=%s path=%s status_code=%s elapsed_ms=%.2f",
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+    )
+    return response
 
 UPLOAD_DIR = Path("data/uploads")
 CHUNKS_DIR = Path("data/chunks")
@@ -240,6 +271,7 @@ def _rebuild_index() -> Dict[str, Any]:
     global _store
     _store = store
 
+    logger.info("index rebuilt indexed_chunks=%s", len(records))
     return {"indexed_chunks": len(records), "index_dir": str(INDEX_DIR), "model": "sentence-transformers/all-MiniLM-L6-v2"}
 
 
@@ -383,8 +415,10 @@ async def ingest(file: UploadFile = File(...)):
             _rebuild_index()
             resp["auto_rebuilt_index"] = True
         except Exception:
+            logger.exception("auto index rebuild failed doc_id=%s", doc_id)
             resp["auto_rebuilt_index"] = False
 
+    logger.info("file ingested doc_id=%s filename=%s chunks=%s", doc_id, file.filename, len(chunks))
     return resp
 
 
@@ -488,8 +522,10 @@ def ingest_url(payload: Dict[str, Any] = Body(...)):
             _rebuild_index()
             out["auto_rebuilt_index"] = True
         except Exception:
+            logger.exception("auto index rebuild failed doc_id=%s", doc_id)
             out["auto_rebuilt_index"] = False
 
+    logger.info("url ingested doc_id=%s filename=%s chunks=%s", doc_id, filename, len(chunks))
     return out
 
 
@@ -524,6 +560,7 @@ def delete_document(doc_id: str):
             upload_file.unlink()
 
     chunk_file.unlink()
+    logger.info("document deleted doc_id=%s", doc_id)
 
     auto_rebuilt = False
     index_cleared = False
@@ -678,6 +715,7 @@ def query(payload: Dict[str, Any]):
     context = "\n".join(context_blocks).strip()
 
     if not context:
+        logger.info("query completed retrieved_sources=0")
         return {"answer": "I don't know. No relevant sources were retrieved.", "sources": [], "per_document_stats": []}
 
     system_prompt = (
@@ -701,5 +739,6 @@ def query(payload: Dict[str, Any]):
         "per_document_stats": list(per_doc_stats.values()),
         "context": context if return_context else "",
     }
+    logger.info("query completed retrieved_sources=%s use_langchain=%s", len(sources), use_langchain)
     return resp
 
