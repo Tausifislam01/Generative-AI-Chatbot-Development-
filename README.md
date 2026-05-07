@@ -13,6 +13,7 @@ A Retrieval-Augmented Generation (RAG) service that can ingest multiple document
 - **Supported file types**
   - PDF (with OCR fallback)
   - DOCX, TXT
+  - HTML web pages
   - CSV
   - SQLite databases
   - Images (PNG/JPG OCR)

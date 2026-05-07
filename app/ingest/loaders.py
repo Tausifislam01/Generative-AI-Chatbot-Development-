@@ -5,10 +5,37 @@ import pandas as pd
 import sqlite3
 from docx import Document
 import pdfplumber
+from html.parser import HTMLParser
+
+
+class TextOnlyHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts: List[str] = []
+        self.skip = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"script", "style", "noscript"}:
+            self.skip = True
+
+    def handle_endtag(self, tag):
+        if tag in {"script", "style", "noscript"}:
+            self.skip = False
+
+    def handle_data(self, data):
+        text = " ".join(data.split())
+        if text and not self.skip:
+            self.parts.append(text)
 
 
 def load_txt(file_path: Path) -> str:
     return file_path.read_text(encoding="utf-8", errors="ignore")
+
+
+def load_html(file_path: Path) -> str:
+    parser = TextOnlyHTMLParser()
+    parser.feed(file_path.read_text(encoding="utf-8", errors="ignore"))
+    return "\n".join(parser.parts).strip()
 
 
 def load_pdf(file_path: Path) -> str:

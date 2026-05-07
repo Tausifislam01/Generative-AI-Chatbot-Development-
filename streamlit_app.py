@@ -134,6 +134,8 @@ def icon_for(name: str) -> str:
         "pdf": "📄",
         "docx": "📝",
         "txt": "📃",
+        "html": "🌐",
+        "htm": "🌐",
         "csv": "📊",
         "db": "🗄️",
         "sqlite": "🗄️",

@@ -6,7 +6,7 @@ import uuid
 import json
 from typing import Any, Dict, List, Optional
 from app.rag.llm_groq import GroqLLM
-from app.ingest.loaders import load_txt, load_pdf, load_docx, load_csv, load_sqlite
+from app.ingest.loaders import load_txt, load_pdf, load_docx, load_csv, load_sqlite, load_html
 from app.ingest.chunking import chunk_text
 from app.rag.embeddings import Embedder
 from app.rag.vectorstore import FaissVectorStore
@@ -78,16 +78,20 @@ AUTO_REBUILD_INDEX = os.getenv("AUTO_REBUILD_INDEX", "true").strip().lower() in 
 MIN_RETRIEVAL_SCORE = float(os.getenv("MIN_RETRIEVAL_SCORE", "0.25"))
 DEFAULT_USE_LANGCHAIN = os.getenv("DEFAULT_USE_LANGCHAIN", "false").strip().lower() in {"1", "true", "yes", "y"}
 OCR_PDF_MAX_PAGES = int(os.getenv("OCR_PDF_MAX_PAGES", "10"))
+CSV_MAX_ROWS = int(os.getenv("CSV_MAX_ROWS", "5000"))
+SQLITE_MAX_ROWS_PER_TABLE = int(os.getenv("SQLITE_MAX_ROWS_PER_TABLE", "5000"))
 
 SUPPORTED_IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
 SUPPORTED_DOCX_EXTS = {".docx"}
 SUPPORTED_CSV_EXTS = {".csv"}
 SUPPORTED_DB_EXTS = {".db", ".sqlite", ".sqlite3"}
 SUPPORTED_TEXT_EXTS = {".txt"}
+SUPPORTED_HTML_EXTS = {".html", ".htm"}
 SUPPORTED_PDF_EXTS = {".pdf"}
 
 SUPPORTED_EXTS = (
     SUPPORTED_TEXT_EXTS
+    | SUPPORTED_HTML_EXTS
     | SUPPORTED_PDF_EXTS
     | SUPPORTED_IMAGE_EXTS
     | SUPPORTED_DOCX_EXTS
@@ -144,6 +148,8 @@ def _file_type_from_name(name: str) -> str:
         return "docx"
     if s.endswith(".txt"):
         return "txt"
+    if s.endswith((".html", ".htm")):
+        return "html"
     if s.endswith(".csv"):
         return "csv"
     if s.endswith((".db", ".sqlite", ".sqlite3")):
@@ -158,6 +164,7 @@ def _icon_for_type(t: str) -> str:
         "pdf": "📄",
         "docx": "📝",
         "txt": "📄",
+        "html": "🌐",
         "csv": "📊",
         "sqlite": "🗄️",
         "image": "🖼️",
@@ -306,6 +313,7 @@ def _guess_suffix_from_content_type(ct: str) -> str | None:
         "text/csv": ".csv",
         "image/png": ".png",
         "image/jpeg": ".jpg",
+        "text/html": ".html",
     }
     return mapping.get(s)
 
@@ -315,6 +323,8 @@ def _extract_text_from_file(stored_path: Path, suffix: str) -> str:
 
     if suffix == ".txt":
         text = load_txt(stored_path)
+    elif suffix in SUPPORTED_HTML_EXTS:
+        text = load_html(stored_path)
     elif suffix == ".pdf":
         text = load_pdf(stored_path)
         if _is_probably_scanned_pdf(text):
@@ -327,9 +337,9 @@ def _extract_text_from_file(stored_path: Path, suffix: str) -> str:
     elif suffix in SUPPORTED_DOCX_EXTS:
         text = load_docx(stored_path)
     elif suffix in SUPPORTED_CSV_EXTS:
-        text = load_csv(stored_path)
+        text = load_csv(stored_path, max_rows=CSV_MAX_ROWS)
     elif suffix in SUPPORTED_DB_EXTS:
-        text = load_sqlite(stored_path)
+        text = load_sqlite(stored_path, max_rows_per_table=SQLITE_MAX_ROWS_PER_TABLE)
 
     if text is None or not str(text).strip():
         raise HTTPException(
@@ -348,6 +358,8 @@ def health():
         "min_retrieval_score": MIN_RETRIEVAL_SCORE,
         "default_use_langchain": DEFAULT_USE_LANGCHAIN,
         "ocr_pdf_max_pages": OCR_PDF_MAX_PAGES,
+        "csv_max_rows": CSV_MAX_ROWS,
+        "sqlite_max_rows_per_table": SQLITE_MAX_ROWS_PER_TABLE,
         "supported_exts": sorted(SUPPORTED_EXTS),
     }
 
@@ -451,7 +463,7 @@ def ingest_url(
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
         ),
-        "Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/pdf,application/octet-stream;q=0.9,*/*;q=0.8",
     }
 
     try:
