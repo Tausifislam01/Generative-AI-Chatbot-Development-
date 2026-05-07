@@ -14,6 +14,8 @@ if "token" not in st.session_state:
     st.session_state.token = ""
 if "user" not in st.session_state:
     st.session_state.user = None
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
 
 def auth_headers() -> dict:
@@ -294,6 +296,14 @@ with tabs[3]:
 with tabs[4]:
     st.subheader("Query")
 
+    if st.button("Clear Chat", key="btn_clear_chat"):
+        st.session_state.chat_history = []
+        st.rerun()
+
+    for message in st.session_state.chat_history:
+        with st.chat_message(message.get("role", "user")):
+            st.write(message.get("content", ""))
+
     try:
         docs = fetch_documents()
     except Exception:
@@ -338,6 +348,7 @@ with tabs[4]:
                 "min_score": float(min_score),
                 "use_langchain": bool(use_langchain_ui),
                 "return_context": bool(return_context_ui),
+                "history": st.session_state.chat_history[-8:],
             }
 
             doc_ids = [doc_label_map[x] for x in selected_docs if x in doc_label_map]
@@ -353,9 +364,12 @@ with tabs[4]:
 
                 if r.status_code == 200:
                     out = r.json()
+                    answer = out.get("answer", "")
+                    st.session_state.chat_history.append({"role": "user", "content": question.strip()})
+                    st.session_state.chat_history.append({"role": "assistant", "content": answer})
 
                     st.subheader("Answer")
-                    st.write(out.get("answer", ""))
+                    st.write(answer)
 
                     per_doc = out.get("per_document_stats", []) or []
                     if per_doc:

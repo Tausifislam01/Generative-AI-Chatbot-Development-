@@ -623,6 +623,31 @@ def _normalize_doc_filter(payload: Dict[str, Any]) -> Optional[set[str]]:
     return set(ids) if ids else None
 
 
+def _normalize_history(payload: Dict[str, Any]) -> List[Dict[str, str]]:
+    history = payload.get("history")
+    if not isinstance(history, list):
+        return []
+
+    normalized: List[Dict[str, str]] = []
+    for item in history[-8:]:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        content = item.get("content")
+        if role not in {"user", "assistant"} or not isinstance(content, str) or not content.strip():
+            continue
+        normalized.append({"role": role, "content": content.strip()[:1000]})
+    return normalized
+
+
+def _history_text(history: List[Dict[str, str]]) -> str:
+    lines = []
+    for item in history:
+        label = "User" if item["role"] == "user" else "Assistant"
+        lines.append(f"{label}: {item['content']}")
+    return "\n".join(lines)
+
+
 @app.post("/query")
 def query(payload: Dict[str, Any], current_user=Depends(get_current_user)):
     question = payload.get("question")
@@ -633,14 +658,16 @@ def query(payload: Dict[str, Any], current_user=Depends(get_current_user)):
     use_langchain = bool(payload.get("use_langchain", DEFAULT_USE_LANGCHAIN))
 
     doc_filter = _normalize_doc_filter(payload)
+    history = _normalize_history(payload)
 
     if not question or not isinstance(question, str):
         raise HTTPException(status_code=400, detail="Missing 'question' (string).")
 
     top_k = max(1, min(top_k, 8))
 
-    query_for_search = question.strip()
-    question_for_llm = query_for_search
+    history_context = _history_text(history)
+    query_for_search = f"{history_context}\nUser: {question.strip()}".strip() if history_context else question.strip()
+    question_for_llm = question.strip()
 
     ocr_text = ""
     if image_b64:
@@ -739,7 +766,7 @@ def query(payload: Dict[str, Any], current_user=Depends(get_current_user)):
         "When you use information, cite it by referring to SOURCE tags (file, chunk_id, page)."
     )
 
-    user_prompt = f"Sources:\n{context}\n\nQuestion:\n{question_for_llm}\n\nAnswer with citations."
+    user_prompt = f"Sources:\n{context}\n\nConversation:\n{history_context or '(none)'}\n\nQuestion:\n{question_for_llm}\n\nAnswer with citations."
 
     if use_langchain:
         answer = _answer_with_langchain(system_prompt=system_prompt, user_prompt=user_prompt)
