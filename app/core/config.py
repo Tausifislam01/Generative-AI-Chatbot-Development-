@@ -9,14 +9,19 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
 
     database_url: str = Field(
-        default="postgresql+asyncpg://postgres:postgres@localhost:5432/rag_chatbot",
+        default="sqlite+aiosqlite:///./data/auth.sqlite3",
         validation_alias="DATABASE_URL",
     )
-    auto_create_tables: bool = Field(default=False, validation_alias="AUTO_CREATE_TABLES")
+    auto_create_tables: bool = Field(default=True, validation_alias="AUTO_CREATE_TABLES")
 
-    jwt_secret_key: str
+    jwt_secret_key: str = Field(default="local-dev-change-me", validation_alias="JWT_SECRET_KEY")
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
+
+    seed_admin_email: str = Field(default="admin@gmail.com", validation_alias="SEED_ADMIN_EMAIL")
+    seed_admin_password: str = Field(default="1234", validation_alias="SEED_ADMIN_PASSWORD")
+    seed_user_email: str = Field(default="test@gmail.com", validation_alias="SEED_USER_EMAIL")
+    seed_user_password: str = Field(default="1234", validation_alias="SEED_USER_PASSWORD")
 
     model_config = SettingsConfigDict(
         env_file=".env",
