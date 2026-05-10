@@ -172,23 +172,23 @@ def _icon_for_type(t: str) -> str:
     }.get(t, "📎")
 
 
-def _answer_with_langchain(system_prompt: str, user_prompt: str, model: str = "llama-3.3-70b-versatile") -> str:
+def _answer_with_langchain(system_prompt: str, user_prompt: str, model: str = "gemini-2.5-flash") -> str:
     try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
         from langchain_groq import ChatGroq
         from langchain_core.prompts import ChatPromptTemplate
         from langchain_core.output_parsers import StrOutputParser
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=(
-                "LangChain is enabled but required packages are not installed. "
-                "Install: pip install langchain langchain-core langchain-groq. "
-                f"Import error: {e}"
-            ),
+            detail=f"LangChain dependencies missing: {e}",
         )
 
     prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("user", user_prompt)])
-    chain = prompt | ChatGroq(model=model) | StrOutputParser()
+    llm_gemini = ChatGoogleGenerativeAI(model=model)
+    llm_groq = ChatGroq(model="llama-3.3-70b-versatile")
+    llm = llm_gemini.with_fallbacks([llm_groq])
+    chain = prompt | llm | StrOutputParser()
     return chain.invoke({})
 
 
@@ -212,7 +212,8 @@ def get_store() -> FaissVectorStore:
 
 
 def _is_probably_scanned_pdf(extracted_text: str) -> bool:
-    return len((extracted_text or "").strip()) < 50
+    text_without_page_markers = PAGE_MARKER_RE.sub("", extracted_text or "")
+    return len(text_without_page_markers.strip()) < 50
 
 
 def _load_all_chunks() -> List[Dict[str, Any]]:
@@ -281,7 +282,7 @@ def _rebuild_index() -> Dict[str, Any]:
     _store = store
 
     logger.info("index rebuilt indexed_chunks=%s", len(records))
-    return {"indexed_chunks": len(records), "index_dir": str(INDEX_DIR), "model": "sentence-transformers/all-MiniLM-L6-v2"}
+    return {"indexed_chunks": len(records), "index_dir": str(INDEX_DIR), "model": "gemini-embedding-2"}
 
 
 def _ensure_index_ready() -> FaissVectorStore:

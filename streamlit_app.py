@@ -1,426 +1,630 @@
-import os
 import base64
+import html
+import os
+from typing import Any
+
+import pandas as pd
 import requests
 import streamlit as st
-import pandas as pd
-from typing import List
+from dotenv import load_dotenv
 
-API_BASE_DEFAULT = os.getenv("API_BASE", "http://127.0.0.1:8000").rstrip("/")
+load_dotenv()
 
-st.set_page_config(page_title="RAG Assignment UI", layout="wide")
-st.title("RAG Assignment UI")
+API_BASE = (os.getenv("STREAMLIT_API_URL") or os.getenv("API_BASE") or "http://127.0.0.1:8000").rstrip("/")
+SUPPORTED_UPLOAD_TYPES = ["pdf", "docx", "txt", "html", "htm", "csv", "db", "sqlite", "sqlite3", "png", "jpg", "jpeg"]
 
-if "token" not in st.session_state:
-    st.session_state.token = ""
-if "user" not in st.session_state:
-    st.session_state.user = None
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+st.set_page_config(page_title="RAG Chatbot", layout="wide", initial_sidebar_state="expanded")
+
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+
+:root {
+    --primary: #6366f1;
+    --primary-light: #818cf8;
+    --primary-xlight: #eef2ff;
+    --surface: #ffffff;
+    --surface-2: #f8fafc;
+    --border: #e2e8f0;
+    --text: #0f172a;
+    --text-2: #475569;
+    --text-3: #94a3b8;
+    --success: #10b981;
+    --success-bg: #ecfdf5;
+    --warning: #f59e0b;
+    --warning-bg: #fffbeb;
+    --error: #ef4444;
+    --error-bg: #fef2f2;
+    --radius: 12px;
+    --shadow: 0 1px 3px rgba(0,0,0,.08), 0 4px 16px rgba(99,102,241,.06);
+    --shadow-lg: 0 4px 24px rgba(99,102,241,.12);
+}
+
+.stApp { background: linear-gradient(135deg, #f0f4ff 0%, #fafbff 50%, #f8fafc 100%); }
+.block-container { max-width: 1280px; padding-top: 1.5rem; padding-bottom: 3rem; }
+
+[data-testid="stSidebar"] {
+    background: #ffffff;
+    border-right: 1px solid var(--border);
+    box-shadow: 2px 0 16px rgba(0,0,0,.04);
+}
+
+h1,h2,h3 { font-family: 'Inter', sans-serif; color: var(--text); }
+
+.card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.4rem;
+    box-shadow: var(--shadow);
+    margin-bottom: 1rem;
+}
+.card-title {
+    font-size: 0.7rem; font-weight: 700; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--primary); margin-bottom: .5rem;
+}
+.page-hero {
+    background: linear-gradient(120deg, #6366f1 0%, #818cf8 60%, #a5b4fc 100%);
+    border-radius: var(--radius);
+    padding: 1.4rem 1.8rem;
+    color: white;
+    margin-bottom: 1.5rem;
+    box-shadow: var(--shadow-lg);
+}
+.page-hero h1 { color: white; font-size: 1.7rem; margin: 0 0 .3rem; }
+.page-hero p { color: rgba(255,255,255,.85); margin: 0; font-size: .94rem; }
+.badge {
+    display: inline-block; padding: .2rem .55rem; border-radius: 999px;
+    font-size: .72rem; font-weight: 600; margin-right: .3rem;
+}
+.badge-primary { background: var(--primary-xlight); color: var(--primary); }
+.badge-success { background: var(--success-bg); color: var(--success); }
+.badge-warn { background: var(--warning-bg); color: var(--warning); }
+.badge-error { background: var(--error-bg); color: var(--error); }
+.source-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--primary);
+    border-radius: 8px;
+    padding: .8rem 1rem;
+    margin-bottom: .6rem;
+    box-shadow: var(--shadow);
+}
+.source-card .filename { font-weight: 600; color: var(--text); font-size: .9rem; }
+.source-card .meta { color: var(--text-3); font-size: .78rem; margin: .2rem 0 .4rem; }
+.source-card .snippet { color: var(--text-2); font-size: .85rem; line-height: 1.5; }
+.stat-pill {
+    display: inline-flex; align-items: center; gap: .4rem;
+    background: var(--primary-xlight); color: var(--primary);
+    border-radius: 999px; padding: .25rem .7rem;
+    font-size: .8rem; font-weight: 600;
+}
+.auth-wrap {
+    max-width: 440px; margin: 2rem auto;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 2.2rem; box-shadow: var(--shadow-lg);
+}
+div[data-testid="stMetric"] {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 1rem;
+    box-shadow: var(--shadow);
+}
+div[data-testid="stChatMessage"] { border-radius: var(--radius); }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ─────────────────────────── helpers ────────────────────────────
+
+def init_state():
+    defaults = {
+        "token": "", "user": None,
+        "chat_history": [], "last_answer": None,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+init_state()
 
 
 def auth_headers() -> dict:
-    if not st.session_state.token:
-        return {}
-    return {"Authorization": f"Bearer {st.session_state.token}"}
+    t = st.session_state.get("token", "")
+    return {"Authorization": f"Bearer {t}"} if t else {}
 
 
-with st.sidebar:
-    st.subheader("Settings")
-    api_base = st.text_input("API Base URL", value=API_BASE_DEFAULT).rstrip("/")
-    st.caption("Example: http://127.0.0.1:8000")
-    st.divider()
+def api(method: str, path: str, **kwargs) -> Any:
+    resp = requests.request(method, f"{API_BASE}{path}", **kwargs)
+    if resp.status_code >= 400:
+        raise requests.HTTPError(resp.text, response=resp)
+    return resp.json() if resp.content else {}
 
-    auto_indexing = None
-    min_score_default = None
-    default_use_langchain = None
 
-    if st.button("Check API Health"):
-        try:
-            r = requests.get(f"{api_base}/health", timeout=10)
-            if r.status_code == 200:
-                data = r.json()
-                st.success(data)
-                auto_indexing = data.get("auto_rebuild_index")
-                min_score_default = data.get("min_retrieval_score")
-                default_use_langchain = data.get("default_use_langchain")
-            else:
-                st.error(r.text)
-        except Exception as e:
-            st.error(str(e))
-
+def safe_api(method, path, **kwargs):
     try:
-        r = requests.get(f"{api_base}/health", timeout=3)
-        if r.status_code == 200:
-            data = r.json()
-            auto_indexing = data.get("auto_rebuild_index")
-            min_score_default = data.get("min_retrieval_score")
-            default_use_langchain = data.get("default_use_langchain")
-    except Exception:
-        pass
-
-    st.divider()
-    st.subheader("Indexing Status")
-    if auto_indexing is True:
-        st.success("Auto indexing: ON ✅")
-        st.caption("Uploads/URL ingests are queryable immediately.")
-    elif auto_indexing is False:
-        st.warning("Auto indexing: OFF ⚠️")
-        st.caption("After ingesting files, you must run Build Index.")
-    else:
-        st.info("Auto indexing: unknown")
-        st.caption("API not reachable or /health missing config fields.")
-
-    st.divider()
-    st.subheader("Answer Options")
-    use_langchain_ui = st.checkbox(
-        "Use LangChain (bonus)",
-        value=bool(default_use_langchain) if default_use_langchain is not None else False,
-    )
-    return_context_ui = st.checkbox("Return context in response", value=False)
-
-    st.divider()
-    st.subheader("Account")
-    if st.session_state.user:
-        st.success(st.session_state.user.get("email", "Logged in"))
-        st.caption(f"Role: {st.session_state.user.get('role', 'user')}")
-        if st.button("Logout"):
-            st.session_state.token = ""
-            st.session_state.user = None
-            st.rerun()
-    else:
-        auth_mode = st.radio("Mode", ["Login", "Register"], horizontal=True)
-        auth_email = st.text_input("Email")
-        auth_password = st.text_input("Password", type="password")
-        auth_button = "Login" if auth_mode == "Login" else "Register"
-
-        if st.button(auth_button):
-            if not auth_email.strip() or not auth_password:
-                st.error("Email and password are required.")
-            else:
-                try:
-                    if auth_mode == "Register":
-                        r = requests.post(
-                            f"{api_base}/auth/register",
-                            json={"email": auth_email.strip(), "password": auth_password},
-                            timeout=30,
-                        )
-                        if r.status_code not in (200, 201):
-                            st.error(r.text)
-                        else:
-                            st.success("Account created. Please login.")
-                    else:
-                        r = requests.post(
-                            f"{api_base}/auth/login",
-                            json={"email": auth_email.strip(), "password": auth_password},
-                            timeout=30,
-                        )
-                        if r.status_code == 200:
-                            st.session_state.token = r.json().get("access_token", "")
-                            me = requests.get(f"{api_base}/auth/me", headers=auth_headers(), timeout=30)
-                            if me.status_code == 200:
-                                st.session_state.user = me.json()
-                            st.rerun()
-                        else:
-                            st.error(r.text)
-                except Exception as e:
-                    st.error(str(e))
-
-API_BASE = api_base
-
-
-def icon_for(name: str) -> str:
-    ext = (name.split(".")[-1] if "." in name else "").lower()
-    return {
-        "pdf": "📄",
-        "docx": "📝",
-        "txt": "📃",
-        "html": "🌐",
-        "htm": "🌐",
-        "csv": "📊",
-        "db": "🗄️",
-        "sqlite": "🗄️",
-        "sqlite3": "🗄️",
-        "png": "🖼️",
-        "jpg": "🖼️",
-        "jpeg": "🖼️",
-    }.get(ext, "📁")
-
-
-def fetch_documents() -> list[dict]:
-    r = requests.get(f"{API_BASE}/documents", headers=auth_headers(), timeout=30)
-    r.raise_for_status()
-    docs = r.json() or []
-    docs.sort(key=lambda d: (d.get("original_filename") or "").lower())
-    return docs
-
-
-tabs = st.tabs(["Upload File", "Ingest URL", "Build Index", "Docs", "Query"])
-
-with tabs[0]:
-    st.subheader("Upload File")
-    file = st.file_uploader("Choose a file", type=None)
-
-    if st.button("Ingest File", key="btn_ingest_file"):
-        if file is None:
-            st.error("Please select a file.")
-        else:
-            try:
-                with st.spinner("Uploading & ingesting..."):
-                    files = {"file": (file.name, file.getvalue())}
-                    r = requests.post(f"{API_BASE}/ingest", files=files, headers=auth_headers(), timeout=300)
-                if r.status_code == 200:
-                    out = r.json()
-                    st.success("Ingested successfully.")
-                    st.json(out)
-                    if auto_indexing is False:
-                        st.warning("Auto indexing is OFF — go to Build Index tab to make it queryable.")
-                    else:
-                        st.info("If auto indexing is ON, this document should be queryable immediately.")
-                else:
-                    st.error(r.text)
-            except Exception as e:
-                st.error(str(e))
-
-with tabs[1]:
-    st.subheader("Ingest URL")
-    url = st.text_input("Document URL")
-
-    if st.button("Ingest URL", key="btn_ingest_url"):
-        if not url.strip():
-            st.error("Please enter a URL.")
-        else:
-            try:
-                with st.spinner("Downloading & ingesting..."):
-                    r = requests.post(f"{API_BASE}/ingest_url", json={"url": url.strip()}, headers=auth_headers(), timeout=300)
-                if r.status_code == 200:
-                    out = r.json()
-                    st.success("Ingested successfully.")
-                    st.json(out)
-                    if auto_indexing is False:
-                        st.warning("Auto indexing is OFF — go to Build Index tab to make it queryable.")
-                    else:
-                        st.info("If auto indexing is ON, this document should be queryable immediately.")
-                else:
-                    st.error(r.text)
-                    st.info(
-                        "If the site blocks downloads (403) or file type can't be inferred, "
-                        "download locally and use Upload File."
-                    )
-            except Exception as e:
-                st.error(str(e))
-
-with tabs[2]:
-    st.subheader("Build / Rebuild Index")
-
-    if auto_indexing is True:
-        st.info("Auto indexing is ON. You usually do NOT need this tab.")
-        st.caption("Use it only if you want to force a rebuild (e.g., after many ingests).")
-    elif auto_indexing is False:
-        st.warning("Auto indexing is OFF. Run this after ingesting documents.")
-    else:
-        st.caption("If auto indexing is OFF, this is required after ingestion.")
-
-    if st.button("Build Index", key="btn_build_index"):
-        try:
-            with st.spinner("Building FAISS index..."):
-                r = requests.post(f"{API_BASE}/build_index", headers=auth_headers(), timeout=600)
-            if r.status_code == 200:
-                st.success("Index built successfully.")
-                st.json(r.json())
-            else:
-                st.error(r.text)
-        except Exception as e:
-            st.error(str(e))
-
-with tabs[3]:
-    st.subheader("Ingested Documents")
-
-    col_a, col_b = st.columns([1, 2])
-    with col_a:
-        if st.button("Refresh", key="btn_docs_refresh"):
-            st.rerun()
-    with col_b:
-        st.caption("Delete a doc here. If auto indexing is OFF, rebuild in the Build Index tab.")
-
-    try:
-        docs = fetch_documents()
+        return api(method, path, **kwargs), None
     except Exception as e:
-        docs = []
-        st.error(f"Failed to load docs: {e}")
+        msg = str(e)
+        if hasattr(e, "response") and e.response is not None:
+            msg = e.response.text
+        return None, msg
 
-    if not docs:
-        st.info("No docs found yet. Upload or ingest a URL first.")
-    else:
-        rows = []
-        for d in docs:
-            fn = d.get("original_filename") or "unknown"
-            rows.append(
-                {
-                    "": icon_for(fn),
-                    "Filename": fn,
-                    "Chunks": d.get("chunks_count", 0),
-                    "doc_id": d.get("doc_id", ""),
-                }
-            )
 
-        df = pd.DataFrame(rows)
-        st.dataframe(df[["", "Filename", "Chunks", "doc_id"]], width="stretch", hide_index=True)
+def health():
+    try:
+        return api("GET", "/health", timeout=4)
+    except Exception:
+        return None
+
+
+def file_kind(name: str) -> str:
+    ext = (name.rsplit(".", 1)[-1] if "." in name else "").lower()
+    return {"pdf":"PDF","docx":"DOCX","txt":"TXT","html":"HTML","htm":"HTML",
+            "csv":"CSV","db":"SQLite","sqlite":"SQLite","sqlite3":"SQLite",
+            "png":"Image","jpg":"Image","jpeg":"Image"}.get(ext, "File")
+
+
+def current_role() -> str:
+    return str((st.session_state.get("user") or {}).get("role", "user"))
+
+
+def can_manage():
+    return current_role() in {"admin", "editor"}
+
+
+def logout():
+    st.session_state.token = ""
+    st.session_state.user = None
+    st.session_state.chat_history = []
+    st.session_state.last_answer = None
+    st.rerun()
+
+
+# ─────────────────────────── auth page ──────────────────────────
+
+def render_auth():
+    h = health()
+    status = "🟢 Service online" if h else "🔴 Service offline"
+
+    st.markdown(f"""
+    <div style="text-align:center; padding: 2rem 0 .5rem;">
+        <div style="font-size:2.4rem; margin-bottom:.4rem;">🧠</div>
+        <h1 style="font-size:1.9rem; color:#0f172a; margin:0 0 .3rem;">RAG Knowledge Chatbot</h1>
+        <p style="color:#64748b; margin:0 0 .8rem; font-size:.95rem;">
+            Source-grounded answers from your private document library
+        </p>
+        <span style="font-size:.8rem; color:#64748b;">{status}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col = st.columns([1, 1.4, 1])[1]
+    with col:
+        with st.container(border=True):
+            mode = st.radio("Mode", ["Login", "Register"], horizontal=True, label_visibility="collapsed")
+            with st.form("auth_form"):
+                email = st.text_input("Email", placeholder="you@example.com")
+                password = st.text_input("Password", type="password",
+                                         placeholder="Min 8 characters" if mode == "Register" else "Your password")
+                submitted = st.form_submit_button(
+                    "Create Account" if mode == "Register" else "Sign In",
+                    use_container_width=True, type="primary"
+                )
+            if submitted:
+                if not email.strip() or not password:
+                    st.error("Email and password are required.")
+                elif mode == "Register":
+                    data, err = safe_api("POST", "/auth/register",
+                                         json={"email": email.strip(), "password": password}, timeout=20)
+                    if err:
+                        st.error(err)
+                    else:
+                        st.success("Account created — please sign in.")
+                else:
+                    data, err = safe_api("POST", "/auth/login",
+                                         json={"email": email.strip(), "password": password}, timeout=20)
+                    if err:
+                        st.error(err)
+                    else:
+                        st.session_state.token = data.get("access_token", "")
+                        me, merr = safe_api("GET", "/auth/me", headers=auth_headers(), timeout=10)
+                        st.session_state.user = me if me else {}
+                        st.rerun()
+
+
+# ─────────────────────────── sidebar ────────────────────────────
+
+def render_sidebar(h):
+    user = st.session_state.get("user") or {}
+    with st.sidebar:
+        st.markdown("""
+        <div style="padding:.5rem 0 1rem;">
+            <div style="font-size:1.5rem; font-weight:800; color:#6366f1;">🧠 RAG Chatbot</div>
+            <div style="font-size:.78rem; color:#94a3b8; margin-top:.2rem;">Knowledge retrieval system</div>
+        </div>
+        """, unsafe_allow_html=True)
 
         st.divider()
-        st.subheader("Delete Document")
+        st.caption("SIGNED IN AS")
+        st.markdown(f"**{user.get('email','—')}**")
+        role = current_role()
+        badge_cls = "badge-primary" if role == "admin" else ("badge-success" if role == "editor" else "badge-warn")
+        st.markdown(f'<span class="badge {badge_cls}">{role.upper()}</span>', unsafe_allow_html=True)
 
-        options = [
-            (d.get("doc_id", ""), d.get("original_filename") or d.get("doc_id", "unknown"))
-            for d in docs
-            if d.get("doc_id")
-        ]
-        label_to_id = {f"{icon_for(name)} {name}": doc_id for (doc_id, name) in options}
-        selected_label = st.selectbox("Select a document", ["(choose one)"] + list(label_to_id.keys()))
+        st.divider()
+        st.caption("NAVIGATION")
+        page = st.radio("Nav", ["💬 Chat", "📚 Knowledge Base", "📄 Documents", "⚙️ Settings"],
+                        label_visibility="collapsed")
+        st.divider()
 
-        if st.button("Delete Selected", key="btn_delete_selected"):
-            if selected_label == "(choose one)":
-                st.error("Please select a document first.")
-            else:
-                doc_id_to_delete = label_to_id[selected_label]
-                try:
-                    with st.spinner("Deleting..."):
-                        r = requests.delete(f"{API_BASE}/documents/{doc_id_to_delete}", headers=auth_headers(), timeout=120)
-                    if r.status_code == 200:
-                        st.success("Deleted successfully.")
-                        st.json(r.json())
-                        if auto_indexing is False:
-                            st.warning("Auto indexing is OFF — rebuild index now if you plan to query.")
-                    else:
-                        st.error(r.text)
-                except Exception as e:
-                    st.error(str(e))
-
-with tabs[4]:
-    st.subheader("Query")
-
-    if st.button("Clear Chat", key="btn_clear_chat"):
-        st.session_state.chat_history = []
-        st.rerun()
-
-    for message in st.session_state.chat_history:
-        with st.chat_message(message.get("role", "user")):
-            st.write(message.get("content", ""))
-
-    try:
-        docs = fetch_documents()
-    except Exception:
-        docs = []
-
-    doc_label_map: dict[str, str] = {}
-    doc_labels: List[str] = []
-    for d in docs:
-        doc_id = d.get("doc_id")
-        fn = d.get("original_filename") or doc_id
-        if doc_id:
-            label = f"{icon_for(fn)} {fn} ({doc_id[:8]})"
-            doc_label_map[label] = doc_id
-            doc_labels.append(label)
-
-    question = st.text_area("Question", height=120)
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        top_k = st.number_input("top_k", min_value=1, max_value=8, value=5, step=1)
-    with c2:
-        default_min_score = float(min_score_default) if isinstance(min_score_default, (int, float)) else 0.25
-        min_score = st.number_input("min_score", min_value=0.0, max_value=1.0, value=default_min_score, step=0.05)
-    with c3:
-        st.caption("Optional: filter retrieval to selected documents (multi-doc).")
-
-    selected_docs = st.multiselect(
-        "Document filter (optional)",
-        options=doc_labels,
-        default=[],
-    )
-
-    image = st.file_uploader("Optional image (OCR)", type=["png", "jpg", "jpeg"])
-
-    if st.button("Ask", key="btn_ask"):
-        if not question.strip():
-            st.error("Please enter a question.")
+        if h:
+            st.markdown('<span class="badge badge-success">● API Online</span>', unsafe_allow_html=True)
+            auto_idx = h.get("auto_rebuild_index", False)
+            idx_cls = "badge-success" if auto_idx else "badge-warn"
+            idx_lbl = "Auto-index ON" if auto_idx else "Auto-index OFF"
+            st.markdown(f'<span class="badge {idx_cls}">{idx_lbl}</span>', unsafe_allow_html=True)
         else:
-            payload = {
+            st.markdown('<span class="badge badge-error">● API Offline</span>', unsafe_allow_html=True)
+
+        st.divider()
+        if st.button("🚪 Sign Out", use_container_width=True):
+            logout()
+
+    return page
+
+
+# ─────────────────────────── chat page ──────────────────────────
+
+def render_chat(h, docs):
+    st.markdown("""
+    <div class="page-hero">
+        <h1>💬 Chat</h1>
+        <p>Ask questions grounded in your knowledge base — get cited answers.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    min_score_def = float(h.get("min_retrieval_score", 0.25)) if h else 0.25
+    lc_def = bool(h.get("default_use_langchain", False)) if h else False
+
+    label_to_id = {}
+    doc_labels = []
+    for d in docs:
+        did = d.get("doc_id")
+        fn = d.get("original_filename") or did
+        if did:
+            lbl = f"{file_kind(fn)} — {fn} [{did[:8]}]"
+            label_to_id[lbl] = did
+            doc_labels.append(lbl)
+
+    chat_col, ctrl_col = st.columns([0.65, 0.35], gap="large")
+
+    with ctrl_col:
+        with st.container(border=True):
+            st.markdown('<div class="card-title">Retrieval Settings</div>', unsafe_allow_html=True)
+            top_k = st.slider("Sources to retrieve", 1, 8, 5)
+            min_score = st.slider("Min relevance score", 0.0, 1.0, min_score_def, 0.05)
+            use_lc = st.toggle("Use LangChain generation", value=lc_def,
+                               help="Uses LangChain + Groq pipeline instead of direct Groq SDK")
+            show_ctx = st.toggle("Show retrieved context", value=False,
+                                 help="Returns the raw text chunks sent to the LLM")
+            st.markdown('<div class="card-title" style="margin-top:.8rem;">Document Filter</div>',
+                        unsafe_allow_html=True)
+            sel_docs = st.multiselect("Limit to documents", doc_labels,
+                                      placeholder="All documents")
+            st.markdown('<div class="card-title" style="margin-top:.8rem;">Image OCR</div>',
+                        unsafe_allow_html=True)
+            img_file = st.file_uploader("Attach image for OCR", type=["png", "jpg", "jpeg"],
+                                        help="Image text will be added as an extra source")
+            if st.button("🗑️ Clear conversation", use_container_width=True):
+                st.session_state.chat_history = []
+                st.session_state.last_answer = None
+                st.rerun()
+
+    with chat_col:
+        if not docs:
+            st.info("📭 No documents in the knowledge base yet. An admin can upload files from **Knowledge Base**.")
+
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
+
+        question = st.chat_input("Ask a question from your knowledge base…")
+        if question:
+            payload: dict = {
                 "question": question.strip(),
                 "top_k": int(top_k),
                 "min_score": float(min_score),
-                "use_langchain": bool(use_langchain_ui),
-                "return_context": bool(return_context_ui),
-                "history": st.session_state.chat_history[-8:],
+                "use_langchain": bool(use_lc),
+                "return_context": bool(show_ctx),
+                "history": [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state.chat_history[-8:]
+                ],
             }
-
-            doc_ids = [doc_label_map[x] for x in selected_docs if x in doc_label_map]
+            doc_ids = [label_to_id[l] for l in sel_docs if l in label_to_id]
             if doc_ids:
                 payload["doc_ids"] = doc_ids
+            if img_file is not None:
+                payload["image_base64"] = base64.b64encode(img_file.getvalue()).decode()
 
-            if image is not None:
-                payload["image_base64"] = base64.b64encode(image.getvalue()).decode("utf-8")
+            with st.spinner("Retrieving context and generating answer…"):
+                result, err = safe_api("POST", "/query",
+                                       json=payload, headers=auth_headers(), timeout=300)
+            if err:
+                st.error(err)
+            else:
+                answer = result.get("answer", "")
+                st.session_state.chat_history.append({"role": "user", "content": question.strip()})
+                st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                st.session_state.last_answer = result
+                st.rerun()
 
-            try:
-                with st.spinner("Searching + generating answer..."):
-                    r = requests.post(f"{API_BASE}/query", json=payload, headers=auth_headers(), timeout=300)
+    # ── answer details ──
+    latest = st.session_state.last_answer
+    if not latest:
+        return
 
-                if r.status_code == 200:
-                    out = r.json()
-                    answer = out.get("answer", "")
-                    st.session_state.chat_history.append({"role": "user", "content": question.strip()})
-                    st.session_state.chat_history.append({"role": "assistant", "content": answer})
+    sources = latest.get("sources", []) or []
+    per_doc = latest.get("per_document_stats", []) or []
+    ctx = latest.get("context", "") or ""
 
-                    st.subheader("Answer")
-                    st.write(answer)
+    st.divider()
+    if per_doc:
+        st.markdown("#### 📊 Per-document stats")
+        st.dataframe(pd.DataFrame(per_doc), use_container_width=True, hide_index=True)
 
-                    per_doc = out.get("per_document_stats", []) or []
-                    if per_doc:
-                        st.subheader("Per-document stats")
-                        st.dataframe(pd.DataFrame(per_doc), width="stretch", hide_index=True)
+    st.markdown("#### 🔗 Sources")
+    if not sources:
+        st.info("No sources were retrieved for the last answer.")
+    for i, s in enumerate(sources, 1):
+        fname = s.get("source") or s.get("original_filename") or "unknown"
+        score = float(s.get("score") or 0)
+        page = s.get("page") or "—"
+        cid = s.get("chunk_id") if s.get("chunk_id") is not None else "—"
+        snippet = s.get("snippet") or ""
+        st.markdown(f"""
+        <div class="source-card">
+            <div class="filename">{i}. {html.escape(str(fname))}</div>
+            <div class="meta">Page {html.escape(str(page))} &nbsp;·&nbsp; Chunk {html.escape(str(cid))} &nbsp;·&nbsp; Score {score:.3f}</div>
+            <div class="snippet">{html.escape(str(snippet))}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-                    if return_context_ui and out.get("context"):
-                        st.subheader("Context")
-                        st.code(out.get("context", ""), language="text")
+    if show_ctx and ctx:
+        st.markdown("#### 📋 Retrieved Context")
+        st.code(ctx, language="text")
 
-                    st.subheader("Sources")
-                    sources = out.get("sources", []) or []
-                    if not sources:
-                        st.info("No sources returned.")
-                    else:
-                        def group_key(s: dict) -> str:
-                            fn = s.get("original_filename") or s.get("source") or "unknown"
-                            did = s.get("doc_id")
-                            if did:
-                                return f"{icon_for(fn)} {fn} ({str(did)[:8]})"
-                            return "🖼️ image_base64 (OCR)"
 
-                        grouped: dict[str, list[dict]] = {}
-                        for s in sources:
-                            k = group_key(s)
-                            grouped.setdefault(k, []).append(s)
+# ─────────────────────────── knowledge base page ────────────────
 
-                        for gname, items in grouped.items():
-                            st.markdown(f"### {gname}")
-                            for i, s in enumerate(items, start=1):
-                                src = s.get("source", "unknown")
-                                page = s.get("page", "?")
-                                score = float(s.get("score", 0.0) or 0.0)
-                                chunk_id = s.get("chunk_id", "?")
-                                snippet = s.get("snippet", "") or ""
-                                icon = s.get("icon", icon_for(src))
-                                ftype = s.get("file_type", "unknown")
+def render_knowledge(h):
+    st.markdown("""
+    <div class="page-hero">
+        <h1>📚 Knowledge Base</h1>
+        <p>Upload files, ingest URLs, and manage the FAISS search index.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-                                header = (
-                                    f"**{i}. {icon} {src}**  \n"
-                                    f"Type: **{ftype}** · Page: **{page}** · Chunk: **{chunk_id}** · Score: **{score:.3f}**"
-                                )
-                                with st.container(border=True):
-                                    st.markdown(header)
-                                    with st.expander("Snippet"):
-                                        st.write(snippet)
+    if not can_manage():
+        st.warning("🔒 Admin or Editor role required to manage the knowledge base.")
+        return
+
+    auto_idx = h.get("auto_rebuild_index") if h else None
+
+    # ── upload + url ──
+    up_col, url_col = st.columns(2, gap="large")
+
+    with up_col:
+        with st.container(border=True):
+            st.markdown('<div class="card-title">Upload File</div>', unsafe_allow_html=True)
+            st.caption(f"Supported: {', '.join(SUPPORTED_UPLOAD_TYPES)}")
+            fup = st.file_uploader("Choose file", type=SUPPORTED_UPLOAD_TYPES, key="kb_uploader")
+            if st.button("⬆️ Ingest File", use_container_width=True, type="primary", key="btn_ingest"):
+                if fup is None:
+                    st.error("Select a file first.")
                 else:
-                    st.error(r.text)
-                    if "Index not built" in r.text and auto_indexing is False:
-                        st.warning("Auto indexing is OFF — go to Build Index tab and build the index.")
-            except Exception as e:
-                st.error(str(e))
+                    with st.spinner("Uploading and processing…"):
+                        res, err = safe_api("POST", "/ingest",
+                                            files={"file": (fup.name, fup.getvalue())},
+                                            headers=auth_headers(), timeout=300)
+                    if err:
+                        st.error(err)
+                    else:
+                        st.success(f"✅ Ingested **{res.get('original_filename')}** — {res.get('chunks_count')} chunks")
+                        st.json(res)
+                        if auto_idx is False:
+                            st.warning("Auto-index is OFF — rebuild the index below before querying.")
+
+    with url_col:
+        with st.container(border=True):
+            st.markdown('<div class="card-title">Ingest URL</div>', unsafe_allow_html=True)
+            st.caption("Direct link to a PDF, DOCX, CSV, TXT, HTML, or image file.")
+            url_in = st.text_input("Document URL", placeholder="https://example.com/report.pdf", key="url_input")
+            if st.button("🌐 Ingest URL", use_container_width=True, type="primary", key="btn_ingest_url"):
+                if not url_in.strip():
+                    st.error("Enter a URL first.")
+                else:
+                    with st.spinner("Downloading and processing…"):
+                        res, err = safe_api("POST", "/ingest_url",
+                                            json={"url": url_in.strip()},
+                                            headers=auth_headers(), timeout=300)
+                    if err:
+                        st.error(err)
+                    else:
+                        st.success(f"✅ Ingested **{res.get('original_filename')}** — {res.get('chunks_count')} chunks")
+                        st.json(res)
+                        if auto_idx is False:
+                            st.warning("Auto-index is OFF — rebuild the index below before querying.")
+
+    st.divider()
+
+    # ── index management ──
+    idx_col, info_col = st.columns([0.4, 0.6], gap="large")
+    with idx_col:
+        with st.container(border=True):
+            st.markdown('<div class="card-title">Index Management</div>', unsafe_allow_html=True)
+            st.caption("Rebuild the FAISS vector index from all ingested chunks.")
+            if st.button("🔨 Build / Rebuild Index", use_container_width=True, type="primary", key="btn_build"):
+                with st.spinner("Building FAISS index…"):
+                    res, err = safe_api("POST", "/build_index", headers=auth_headers(), timeout=600)
+                if err:
+                    st.error(err)
+                else:
+                    st.success(f"✅ Index built — {res.get('indexed_chunks')} chunks indexed")
+                    st.json(res)
+
+    with info_col:
+        with st.container(border=True):
+            st.markdown('<div class="card-title">Config from /health</div>', unsafe_allow_html=True)
+            if h:
+                cols = st.columns(2)
+                cols[0].metric("Auto-rebuild Index", "ON" if h.get("auto_rebuild_index") else "OFF")
+                cols[1].metric("Min Score", h.get("min_retrieval_score", "—"))
+                cols2 = st.columns(2)
+                cols2[0].metric("LangChain Default", "ON" if h.get("default_use_langchain") else "OFF")
+                cols2[1].metric("OCR PDF Max Pages", h.get("ocr_pdf_max_pages", "—"))
+                cols3 = st.columns(2)
+                cols3[0].metric("CSV Max Rows", h.get("csv_max_rows", "—"))
+                cols3[1].metric("SQLite Max Rows", h.get("sqlite_max_rows_per_table", "—"))
+            else:
+                st.warning("API not reachable.")
+
+
+# ─────────────────────────── documents page ─────────────────────
+
+def render_documents(docs, h):
+    st.markdown("""
+    <div class="page-hero">
+        <h1>📄 Documents</h1>
+        <p>Browse all ingested documents and remove them from the knowledge base.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not docs:
+        st.info("📭 No documents ingested yet.")
+        return
+
+    total_chunks = sum(int(d.get("chunks_count") or 0) for d in docs)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Documents", len(docs))
+    c2.metric("Total Chunks", total_chunks)
+    c3.metric("Avg Chunks/Doc", f"{total_chunks // max(len(docs), 1)}")
+
+    st.markdown("---")
+
+    rows = []
+    for d in docs:
+        fn = d.get("original_filename") or "unknown"
+        rows.append({
+            "Type": file_kind(fn),
+            "Filename": fn,
+            "Chunks": d.get("chunks_count", 0),
+            "Document ID": d.get("doc_id", ""),
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    if not can_manage():
+        return
+
+    st.divider()
+    st.markdown("#### 🗑️ Delete Document")
+    auto_idx = h.get("auto_rebuild_index") if h else None
+
+    label_map = {
+        f"{file_kind(d.get('original_filename') or '')} — {d.get('original_filename') or d.get('doc_id')}": d.get("doc_id")
+        for d in docs if d.get("doc_id")
+    }
+    choices = ["— Select a document —"] + list(label_map.keys())
+    sel = st.selectbox("Document to delete", choices)
+
+    if st.button("🗑️ Delete Selected Document", type="primary", use_container_width=True, key="btn_del"):
+        if sel == choices[0]:
+            st.error("Select a document first.")
+        else:
+            with st.spinner("Deleting…"):
+                res, err = safe_api("DELETE", f"/documents/{label_map[sel]}",
+                                    headers=auth_headers(), timeout=120)
+            if err:
+                st.error(err)
+            else:
+                st.success("✅ Document deleted.")
+                st.json(res)
+                if auto_idx is False:
+                    st.warning("Auto-index is OFF — rebuild the index before querying.")
+                st.rerun()
+
+
+# ─────────────────────────── settings page ──────────────────────
+
+def render_settings(h):
+    st.markdown("""
+    <div class="page-hero">
+        <h1>⚙️ Settings</h1>
+        <p>Session management and backend diagnostics.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    user = st.session_state.get("user") or {}
+
+    with st.container(border=True):
+        st.markdown('<div class="card-title">Account</div>', unsafe_allow_html=True)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Email", user.get("email", "—"))
+        c2.metric("Role", current_role().upper())
+        c3.metric("Active", "Yes" if user.get("is_active") else "No")
+        st.caption(f"User ID: `{user.get('id', '—')}`")
+
+    with st.container(border=True):
+        st.markdown('<div class="card-title">Backend Health</div>', unsafe_allow_html=True)
+        if h:
+            st.success("✅ Backend is reachable and healthy.")
+            st.json(h)
+        else:
+            st.error("❌ Backend is not reachable.")
+        if st.button("🔄 Re-check health", key="btn_health"):
+            st.rerun()
+
+    with st.container(border=True):
+        st.markdown('<div class="card-title">Session</div>', unsafe_allow_html=True)
+        a, b = st.columns(2)
+        with a:
+            if st.button("🔄 Refresh App", use_container_width=True):
+                st.rerun()
+        with b:
+            if st.button("🚪 Sign Out", use_container_width=True, type="primary"):
+                logout()
+
+    with st.container(border=True):
+        st.markdown('<div class="card-title">Supported File Types</div>', unsafe_allow_html=True)
+        if h:
+            exts = h.get("supported_exts", [])
+            st.write(" · ".join(exts) if exts else "—")
+        else:
+            st.write(", ".join(SUPPORTED_UPLOAD_TYPES))
+
+
+# ─────────────────────────── main ───────────────────────────────
+
+if not st.session_state.user:
+    render_auth()
+    st.stop()
+
+h_data = health()
+
+try:
+    docs_list = api("GET", "/documents", headers=auth_headers(), timeout=20) or []
+    docs_list.sort(key=lambda d: (d.get("original_filename") or "").lower())
+except Exception:
+    docs_list = []
+
+active_page = render_sidebar(h_data)
+
+if active_page == "💬 Chat":
+    render_chat(h_data, docs_list)
+elif active_page == "📚 Knowledge Base":
+    render_knowledge(h_data)
+elif active_page == "📄 Documents":
+    render_documents(docs_list, h_data)
+else:
+    render_settings(h_data)
